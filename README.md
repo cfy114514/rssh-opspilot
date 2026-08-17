@@ -1,8 +1,14 @@
-# RSSH
+# RSSH OpsPilot
 
 [English](README.md) | [中文](README_zh.md)
 
-**The SSH client built to be an AI ops copilot.**
+**A local-first SSH operations copilot built on RSSH.**
+
+This public repository is a focused derivative fork of
+[RSSH](https://github.com/shihuili1218/rssh). The upstream desktop, mobile,
+JetBrains, CLI, terminal, SFTP, forwarding, sync, and security capabilities are
+kept intact; this branch adds a local next-command workflow for interactive
+troubleshooting.
 
 > Connect to a host and just ask "why is the disk full?" — the AI proposes commands, flags their side effects, and runs them in your terminal only after you approve. Sensitive data is redacted locally before anything leaves your machine.
 > 
@@ -23,6 +29,53 @@
 <p align="center"><b><a href="https://github.com/shihuili1218/rssh/releases/latest">⬇️ Download latest</a></b> &nbsp;·&nbsp; <a href="docs/article_en.md">Why RSSH?</a></p>
 
 ---
+
+## OpsPilot additions
+
+The fork adds a safe, local-first suggestion loop to the existing terminal:
+
+1. RSSH observes the command blocks and shell prompt already rendered by xterm.
+2. A deterministic LOCAL predictor proposes up to three read-only commands for
+   common log, Spark/YARN, HDFS, and directory-orientation situations.
+3. The palette appears only when a returned prompt is recognized and the input
+   line is empty.
+4. Clicking a suggestion or pressing `Tab` inserts text into the terminal but
+   never submits `Enter` automatically.
+5. Accept/dismiss feedback is stored locally as bounded hashed suggestion ids,
+   allowing later sessions to improve ranking without storing terminal output.
+6. `Ask AI` and `Summarize` pass redacted blocks to RSSH's existing AI panel.
+
+The default path is zero-install on the remote server: no agent, shell hook,
+daemon, extra port, hidden `pwd`, or hidden `ls` command is required. Alternate
+buffer programs such as `vim`, `less`, and `top` pause suggestions. The feature
+can be disabled in **Settings → Shell → Next-command suggestions**.
+
+### Current safety boundary
+
+- Suggestions are read-only by construction in the LOCAL predictor.
+- Suggestions never execute automatically.
+- AI handoff reuses RSSH command-block redaction and fails closed if the policy
+  cannot be loaded.
+- Session summaries are candidate Rules/Context JSON for human review; they do
+  not silently modify trusted knowledge or the remote host.
+- The current fork reuses RSSH's existing transport. Native `ssh.exe` +
+  ConPTY integration that preserves every OpenSSH `ProxyJump`, Agent, and MFA
+  behavior is planned as the next transport milestone.
+
+### Development quick start
+
+```powershell
+npm ci
+npm test
+npm run build
+```
+
+The LOCAL predictor and its prompt/context tests are in
+`src/lib/terminal/next-command.test.ts`. The main integration point is
+`src/lib/components/TerminalPane.svelte`.
+
+The RSSH architecture and privacy boundaries are documented in
+[`docs/article_arch_en.md`](docs/article_arch_en.md).
 
 ## Why RSSH
 
@@ -125,7 +178,11 @@ See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## License
 
-MIT
+MIT, inherited from the upstream RSSH repository. The original copyright and
+permission notice remains in [`LICENSE`](LICENSE) and must be preserved in
+redistributions.
+
+Upstream project: [shihuili1218/rssh](https://github.com/shihuili1218/rssh)
 
 ## Friend Link
 

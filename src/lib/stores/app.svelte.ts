@@ -866,6 +866,35 @@ export async function setAutoColorBlocks(v: boolean) {
   await invoke("set_setting", { key: "command_block_auto_color", value: String(v) });
 }
 
+/* ─── Local next-command suggestions ─── */
+// Suggestions are local-first and read-only, but the user still needs an
+// explicit privacy/ergonomics switch. Only an explicit "false" disables them.
+let _nextCommandSuggestionsEnabled = $state(true);
+let _ncsLoaded = false;
+let _ncsLoad: Promise<boolean> | null = null;
+export function nextCommandSuggestionsEnabled() { return _nextCommandSuggestionsEnabled; }
+export async function loadNextCommandSuggestionsEnabled(): Promise<boolean> {
+  if (_ncsLoaded) return _nextCommandSuggestionsEnabled;
+  if (!_ncsLoad) {
+    _ncsLoad = (async () => {
+      try {
+        const value = await invoke<string | null>("get_setting", { key: "next_command_suggestions" });
+        _nextCommandSuggestionsEnabled = value !== "false";
+      } catch (error) {
+        console.warn("[settings] next-command suggestions load failed:", error);
+      }
+      _ncsLoaded = true;
+      return _nextCommandSuggestionsEnabled;
+    })();
+  }
+  return _ncsLoad;
+}
+export async function setNextCommandSuggestionsEnabled(value: boolean) {
+  _nextCommandSuggestionsEnabled = value;
+  _ncsLoaded = true;
+  await invoke("set_setting", { key: "next_command_suggestions", value: String(value) });
+}
+
 /* ─── Command-block copy redaction ─── */
 export interface CommandBlockRedactRule extends RedactionRule {
   id: string;

@@ -49,6 +49,16 @@
     import {ACTIONS, matchBinding, optionArrowWordMotion, type ActionId} from "../keyboard/keymap.ts";
     import * as keymap from "../stores/keymap.svelte.ts";
     import BlockContextMenu, {type MenuItem} from "./BlockContextMenu.svelte";
+    import NextCommandPalette from "./NextCommandPalette.svelte";
+    import {
+        parsePromptLine,
+        suggestNextCommands,
+        type NextCommandSuggestion,
+    } from "../terminal/next-command.ts";
+    import {
+        loadNextCommandFeedback,
+        recordNextCommandFeedback,
+    } from "../terminal/next-command-feedback.ts";
 
     let hlRules = $state<HighlightRule[]>([]);
     let hlCompiled = $state<CompiledHighlightRule[]>([]);
@@ -214,6 +224,10 @@
     let fitAddon: FitAddon;
     let searchAddon: SearchAddon;
     let sessionId = $state<string | null>(null);
+    let nextCommandSuggestions = $state<NextCommandSuggestion[]>([]);
+    let nextCommandPromptKey = "";
+    let nextCommandTimer: ReturnType<typeof setTimeout> | undefined;
+    let nextCommandParsedDisposable: IDisposable | undefined;
     // `connectAndWire` crosses several awaits. The generation guards the whole
     // component flow; ReservedSessionAttempt owns the finer Pending/Ready state.
     let connectGeneration = 0;
@@ -442,6 +456,10 @@
     }
 
     function onWindowKeyDown(e: KeyboardEvent) {
+        if (e.key === "Escape" && nextCommandSuggestions.length > 0) {
+            dismissNextCommandSuggestionsByUser();
+            // Do not preventDefault: Esc remains available to the shell.
+        }
         if (e.key === "Escape" && selectedBlockIds.size > 0) {
             clearBlockSelection();
             // 不 preventDefault：Esc 仍要送到 shell（vim/less 等需要）。
@@ -611,6 +629,153 @@
     const isLocal = $derived(tabType === "local");
     const isPtyConnector = $derived(tabType === "docker_exec" || tabType === "kubectl_exec");
     const isSsh = $derived(tabType === "ssh");
+
+    function clearNextCommandSuggestions() {
+        if (nextCommandTimer !== undefined) {
+            clearTimeout(nextCommandTimer);
+            nextCommandTimer = undefined;
+        }
+        nextCommandSuggestions = [];
+    }
+
+    function dismissNextCommandSuggestions() {
+        // Keep the prompt key so a quiet onWriteParsed notification cannot
+        // immediately reopen a card the user explicitly dismissed.
+        if (nextCommandTimer !== undefined) {
+            clearTimeout(nextCommandTimer);
+            nextCommandTimer = undefined;
+        }
+        nextCommandSuggestions = [];
+    }
+
+    function dismissNextCommandSuggestionsByUser() {
+        for (const suggestion of nextCommandSuggestions) {
+            recordNextCommandFeedback(suggestion.id, "dismissed");
+        }
+        dismissNextCommandSuggestions();
+    }
+
+    function acceptNextCommand(suggestion: NextCommandSuggestion) {
+        if (!terminal || disconnected || !sessionId || isAltBuffer) return;
+        const current = [...readViewportText(terminal)].reverse().find((item) => item.trim().length > 0) ?? "";
+        const prompt = parsePromptLine(current);
+        // Never replace text the user has already typed after the prompt.
+        if (!prompt || prompt.input.trim().length > 0) return;
+        recordNextCommandFeedback(suggestion.id, "accepted");
+        nextCommandPromptKey = "";
+        clearNextCommandSuggestions();
+        terminal.focus();
+        // xterm.input enters the normal onData path but deliberately omits CR,
+        // so accepting a suggestion cannot execute it without user approval.
+        terminal.input(suggestion.command);
+    }
+
+    async function readSafeNextCommandContext(): Promise<{
+        promptLine: string;
+        host?: string;
+        cwd?: string;
+        blocks: string[];
+    } | null> {
+        if (!terminal || disconnected || !sessionId || isAltBuffer) return null;
+        const visible = readViewportText(terminal);
+        const promptLine = [...visible].reverse().find((item) => item.trim().length > 0) ?? "";
+        const prompt = parsePromptLine(promptLine);
+        if (!prompt) return null;
+        const blocks = blockTracker ? [...blockTracker.blocks].slice(-4) : [];
+        const rawBlocks = blocks.length > 0
+            ? extractBlockTexts(terminal, blocks, foldStore)
+            : visible.slice(-20);
+        if (rawBlocks.length === 0) return null;
+        // Reuse the command-block redaction policy before handing context to
+        // the existing AI panel. If the policy cannot be read, fail closed.
+        try {
+            const redaction = await app.loadCommandBlockRedaction(true);
+            return {
+                promptLine,
+                host: prompt.host,
+                cwd: prompt.cwd,
+                blocks: redactCommandBlockTexts(rawBlocks, redaction),
+            };
+        } catch (error) {
+            toast.error(errMsg(error));
+            return null;
+        }
+    }
+
+    async function askAiAboutNextCommand() {
+        if (ai.settings()?.has_api_key !== true) return;
+        const context = await readSafeNextCommandContext();
+        if (!context) return;
+        const prompt = [
+            "Help me choose the next safe, read-only troubleshooting command.",
+            `Host: ${context.host ?? "unknown"}`,
+            `CWD: ${context.cwd ?? "unknown"}`,
+            "Visible terminal context:",
+            context.blocks.join("\n---\n"),
+            "Do not execute anything automatically. Explain the best next step and wait for approval.",
+        ].join("\n");
+        ai.openPanel(tabId);
+        ai.prefillInput(tabId, prompt);
+        dismissNextCommandSuggestions();
+    }
+
+    async function summarizeNextCommandSession() {
+        if (ai.settings()?.has_api_key !== true) return;
+        const context = await readSafeNextCommandContext();
+        if (!context) return;
+        const prompt = [
+            "Summarize this troubleshooting session for local knowledge review.",
+            "Return JSON only with this shape: {\"rules\":[],\"context\":[],\"failed_patterns\":[]}",
+            "Rules must be reusable patterns; context must be host-specific facts.",
+            "Every item is a candidate only and must include evidence and confidence. Do not invent facts.",
+            `Host: ${context.host ?? "unknown"}`,
+            `CWD: ${context.cwd ?? "unknown"}`,
+            "Sanitized command blocks:",
+            context.blocks.join("\n---\n"),
+        ].join("\n");
+        ai.openPanel(tabId);
+        ai.prefillInput(tabId, prompt);
+        dismissNextCommandSuggestions();
+    }
+
+    function scheduleNextCommandSuggestions() {
+        if (!terminal || disconnected || !sessionId || isAltBuffer) return;
+        if (!isSsh && !isLocal && !isPtyConnector) return;
+        if (!app.nextCommandSuggestionsEnabled()) return;
+        if (nextCommandTimer !== undefined) clearTimeout(nextCommandTimer);
+        nextCommandTimer = setTimeout(() => {
+            nextCommandTimer = undefined;
+            const visible = readViewportText(terminal);
+            const line = [...visible].reverse().find((item) => item.trim().length > 0) ?? "";
+            const prompt = parsePromptLine(line);
+            // Prompt detection is the boundary: no hidden command, no remote
+            // pwd probe, and no suggestion while the user is editing a line.
+            if (!prompt || prompt.input.trim().length > 0 || isAltBuffer || !sessionId) return;
+
+            const blocks = blockTracker
+                ? [...blockTracker.blocks].slice(-4)
+                : [];
+            const recentBlocks = blocks.length > 0
+                ? extractBlockTexts(terminal, blocks, foldStore)
+                : visible.slice(-20);
+            const latestBlockId = blocks[blocks.length - 1]?.id ?? 0;
+            const key = `${sessionId}:${latestBlockId}:${line}`;
+            if (key === nextCommandPromptKey) return;
+            nextCommandPromptKey = key;
+            nextCommandSuggestions = suggestNextCommands({
+                promptLine: line,
+                cwd: prompt.cwd,
+                host: prompt.host,
+                recentBlocks,
+                feedback: loadNextCommandFeedback(),
+            });
+        }, 220);
+    }
+
+    $effect(() => {
+        if (!app.nextCommandSuggestionsEnabled()) clearNextCommandSuggestions();
+    });
+
     // Transport table — the per-tab byte-stream IPC contract lives in DATA, not in
     // branches. Adding a transport is one more row, zero code change.
     // resize:null means the transport has no rows/cols (serial) → callers skip it.
@@ -1049,6 +1214,7 @@
 
         dataDisposable = terminal.onData((data: string) => {
             if (destroyed || disconnected || sessionId !== sid) return;
+            clearNextCommandSuggestions();
             if (streamOpts) {
                 maybeReleaseBacklog(data);
                 streamOnData(data);
@@ -1080,6 +1246,8 @@
         resizeDisposable = undefined;
         reservedSessionAttempt.cancel();
         clearSshPromptUi();
+        nextCommandPromptKey = "";
+        clearNextCommandSuggestions();
         disconnected = false;
         sessionId = null;
         serialHexBuf = "";
@@ -1627,6 +1795,11 @@
         }
         terminal.attachCustomKeyEventHandler((e: KeyboardEvent) => {
             if (e.type !== "keydown") return true;
+            if (e.key === "Tab" && !e.ctrlKey && !e.metaKey && !e.altKey && nextCommandSuggestions.length > 0) {
+                e.preventDefault();
+                acceptNextCommand(nextCommandSuggestions[0]);
+                return false;
+            }
             // macOS Option+←/→ word jump — xterm 6 dropped xterm 5's rewrite to
             // Meta-b/f (upstream #4538/#5389), so inject it ourselves. input()
             // feeds the same onData → PTY path as a real keystroke.
@@ -1669,6 +1842,7 @@
         const [commandBlockSplitMode, commandBlockMaxLines] = await Promise.all([
             app.loadCommandBlockSplitMode(),
             app.loadCommandBlockMaxLines(),
+            app.loadNextCommandSuggestionsEnabled(),
         ]);
         if (destroyed) return;
         blockTracker = createCommandBlockTracker(terminal, commandBlockSplitMode);
@@ -1688,6 +1862,19 @@
             if (selectionAnchorId !== null && !live.has(selectionAnchorId)) {
                 selectionAnchorId = null;
             }
+        });
+
+        // The tracker already understands command-block boundaries. This
+        // second, presentation-only listener waits for a returned shell prompt
+        // and feeds the local predictor from xterm text that is already on
+        // screen. It never sends a probe command to the remote host.
+        nextCommandParsedDisposable?.dispose();
+        nextCommandParsedDisposable = terminal.onWriteParsed(() => {
+            if (isAltBuffer) {
+                dismissNextCommandSuggestions();
+                return;
+            }
+            scheduleNextCommandSuggestions();
         });
 
         // Fold store — splice-based fold/unfold with auto-cleanup on resize and
@@ -1843,6 +2030,9 @@
         resizeDisposable?.dispose();
         resizeDisposable = undefined;
         reconnectDisposable?.dispose();
+        nextCommandParsedDisposable?.dispose();
+        nextCommandParsedDisposable = undefined;
+        clearNextCommandSuggestions();
         // 关 tab 时若停在 prompt 阶段，主动取消让后端 connect 流程跳出，
         // 否则 ssh_connect 会在 worker 线程上挂着等用户输入。
         // The canonical attempt id, not the reusable tab id, identifies the
@@ -1926,6 +2116,15 @@
                 <span class="backlog-hint">{t("terminal.backlog.skip_hint")}</span>
             </div>
         {/if}
+        <NextCommandPalette
+            suggestions={nextCommandSuggestions}
+            mobile={app.isMobile}
+            canAskAi={ai.settings()?.has_api_key === true}
+            onAccept={acceptNextCommand}
+            onDismiss={dismissNextCommandSuggestionsByUser}
+            onAskAi={() => { void askAiAboutNextCommand(); }}
+            onSummarize={() => { void summarizeNextCommandSession(); }}
+        />
         {#if app.commandBlockBar()}
             <!-- 染色层：整行宽的半透明色块，用块自身的色条颜色。pointer-events:none
                  让点击/选中穿透到 xterm 与 .block-hit。坐标同 fold-label：block-bar
