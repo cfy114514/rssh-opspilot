@@ -18,6 +18,7 @@
   /** Auto-open one local terminal on startup — default off (unset reads as off). */
   let openLocalOnStartup = $state(false);
   let verboseLog = $state(true);
+  let nextCommandSuggestionsEnabled = $state(true);
   let connectTimeout = $state(10);
   let copyOnSelect = $state(false);
   let confirmCloseTab = $state(false);
@@ -49,6 +50,7 @@
       openLocalOnStartup = (await invoke<string | null>("get_setting", { key: "open_local_on_startup" })) === "true";
     }
     verboseLog = (await invoke<string | null>("get_setting", { key: "verbose_log" })) !== "false";
+    nextCommandSuggestionsEnabled = await app.loadNextCommandSuggestionsEnabled();
     const ts = await invoke<string | null>("get_setting", { key: "connect_timeout" });
     if (ts) connectTimeout = parseInt(ts, 10) || 10;
     copyOnSelect = await app.loadCopyOnSelect();
@@ -95,6 +97,10 @@
 
   async function saveVerbose() {
     await invoke("set_setting", { key: "verbose_log", value: String(verboseLog) });
+  }
+
+  async function saveNextCommandSuggestions() {
+    await app.setNextCommandSuggestionsEnabled(nextCommandSuggestionsEnabled);
   }
 
   async function saveOpenLocalOnStartup() {
@@ -233,6 +239,18 @@
     </div>
     <label class="switch">
       <input type="checkbox" bind:checked={verboseLog} onchange={saveVerbose} />
+      <span class="slider"></span>
+    </label>
+  </div>
+
+  <div class="section-label">{t("settings.shell.next_command_suggestions")}</div>
+  <div class="switch-card">
+    <div class="switch-card-body">
+      <div class="switch-card-title" class:on={nextCommandSuggestionsEnabled} class:off={!nextCommandSuggestionsEnabled}>{t("settings.shell.next_command_suggestions")}</div>
+      <div class="switch-card-desc">{t("settings.shell.next_command_suggestions_desc")}</div>
+    </div>
+    <label class="switch">
+      <input type="checkbox" bind:checked={nextCommandSuggestionsEnabled} onchange={saveNextCommandSuggestions} />
       <span class="slider"></span>
     </label>
   </div>

@@ -1,8 +1,12 @@
-# RSSH
+# RSSH OpsPilot
 
 [English](README.md) | [中文](README_zh.md)
 
-**为 AI 运维而生的 SSH 客户端。**
+**基于 RSSH 的本地优先 SSH 运维 Copilot。**
+
+本公开仓库是 [RSSH](https://github.com/shihuili1218/rssh) 的衍生 fork。
+上游的桌面端、移动端、JetBrains、CLI、终端、SFTP、端口转发、同步和安全
+能力保持不变；本分支增加面向交互式排障的本地“下一步命令”工作流。
 
 > 连上服务器，直接问"磁盘怎么满了"——AI 提议命令、标注副作用，你点同意它才在终端里执行；敏感信息离机前本地脱敏。
 > 
@@ -23,6 +27,42 @@
 <p align="center"><b><a href="https://github.com/shihuili1218/rssh/releases">⬇️ 下载最新版</a></b> &nbsp;·&nbsp; <a href="docs/article_zh.md">为什么是 RSSH？</a></p>
 
 ---
+
+## OpsPilot 新增能力
+
+本分支在现有终端上增加一条安全的本地建议链路：
+
+1. 读取 xterm 已经渲染的命令块和 shell Prompt；
+2. LOCAL 规则针对日志、Spark/YARN、HDFS 和目录定位生成最多三条只读建议；
+3. 只有识别到 Prompt 且输入行为空时才显示建议；
+4. 点击或按 `Tab` 只把命令插入输入行，不会自动按回车执行；
+5. 接受/忽略反馈只以有界的本地建议哈希 ID 保存，不保存终端输出；
+6. “询问 AI”和“总结任务”复用 RSSH 现有 AI 面板，并先经过命令块脱敏。
+
+默认仍然是远端零安装：不上传 agent、不改 shell hook、不启动 daemon、不开放
+额外端口，也不会偷偷执行 `pwd` 或 `ls`。进入 `vim`、`less`、`top` 等备用缓冲区
+时会暂停建议。可在 **设置 → Shell → 下一步命令建议** 中关闭此功能。
+
+### 当前安全边界
+
+- LOCAL 建议默认只读，且永不自动执行；
+- AI 读取失败或脱敏策略无法加载时，默认不发送上下文；
+- 总结结果只是待审核的 Rules/Context candidate，不会静默修改可信知识或远端主机；
+- 当前 fork 复用 RSSH 既有传输层；保留完整 OpenSSH `ProxyJump`、Agent、MFA
+  行为的原生 `ssh.exe + ConPTY` 传输是下一阶段工作。
+
+### 开发快速开始
+
+```powershell
+npm ci
+npm test
+npm run build
+```
+
+LOCAL predictor 与 Prompt/Context 测试位于
+`src/lib/terminal/next-command.test.ts`，终端集成入口是
+`src/lib/components/TerminalPane.svelte`。RSSH 的架构和隐私边界见
+[`docs/article_arch_en.md`](docs/article_arch_en.md)。
 
 ## 为什么选 RSSH
 
@@ -123,7 +163,10 @@
 
 ## 协议
 
-MIT
+MIT，继承自上游 RSSH。原始版权和授权文本保留在 [`LICENSE`](LICENSE) 中，
+重新发布时必须一并保留。
+
+上游项目：[shihuili1218/rssh](https://github.com/shihuili1218/rssh)
 
 ## 友情链接
 
