@@ -818,6 +818,72 @@ mod tests {
         (db, MemStore::default(), dir)
     }
 
+    #[test]
+    fn opspilot_memory_is_local_only_for_export_and_import() {
+        use crate::db::opspilot_memory::{
+            self, OpsPilotCwdSource, OpsPilotEventInput, OpsPilotEventKind, OpsPilotExitSource,
+            OpsPilotSessionInput, OpsPilotTargetKind,
+        };
+
+        let (db, ss, dir) = fixture();
+        opspilot_memory::start_session(
+            &db,
+            &OpsPilotSessionInput {
+                id: "local-session".into(),
+                target_kind: OpsPilotTargetKind::Ssh,
+                target_id: "profile-1".into(),
+                host: Some("app.example".into()),
+                started_at: 1,
+            },
+        )
+        .unwrap();
+        opspilot_memory::append_event(
+            &db,
+            &OpsPilotEventInput {
+                id: "local-event".into(),
+                session_id: "local-session".into(),
+                source_block_id: Some(1),
+                kind: OpsPilotEventKind::CommandObserved,
+                host: Some("app.example".into()),
+                cwd: Some("/srv/app".into()),
+                cwd_source: OpsPilotCwdSource::Prompt,
+                cwd_confidence: 0.8,
+                command_redacted: Some("must-stay-local".into()),
+                suggestion_id: None,
+                origin_suggestion_id: None,
+                exit_code: None,
+                exit_source: OpsPilotExitSource::Unavailable,
+                occurred_at: 2,
+            },
+        )
+        .unwrap();
+
+        let payload = build_payload(&db, &ss, dir.path(), &ExportMode::LocalBackup).unwrap();
+        let serialized = serde_json::to_string(&payload).unwrap();
+        assert!(!serialized.contains("opspilot_sessions"));
+        assert!(!serialized.contains("opspilot_events"));
+        assert!(!serialized.contains("opspilot_memory_state"));
+        assert!(!serialized.contains("cleared_at"));
+        assert!(!serialized.contains("command_redacted"));
+        assert!(!serialized.contains("must-stay-local"));
+
+        merge_import(
+            &db,
+            &ss,
+            dir.path(),
+            &json!({
+                "version": 1,
+                "opspilot_sessions": [{"id": "remote-session"}],
+                "opspilot_events": [{
+                    "id": "remote-event",
+                    "command_redacted": "must-not-import"
+                }]
+            }),
+        )
+        .unwrap();
+        assert_eq!(opspilot_memory::memory_stats(&db).unwrap().events, 1);
+    }
+
     fn cred(id: &str, name: &str, secret: Option<&str>) -> Credential {
         Credential {
             id: id.into(),

@@ -5,4 +5,5 @@ pub mod edit;
 pub mod group;
 pub mod ls;
 pub mod open;
+pub mod opspilot_memory;
 pub mod rm;

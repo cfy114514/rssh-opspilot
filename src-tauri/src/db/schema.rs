@@ -2,7 +2,7 @@ use rusqlite::{params, Connection};
 
 use crate::error::AppResult;
 
-const SCHEMA_VERSION: u32 = 27;
+const SCHEMA_VERSION: u32 = 29;
 
 fn column_exists(conn: &Connection, table: &str, col: &str) -> AppResult<bool> {
     let mut stmt = conn.prepare("SELECT 1 FROM pragma_table_info(?1) WHERE name = ?2")?;
@@ -598,6 +598,88 @@ pub fn migrate(conn: &Connection) -> AppResult<()> {
         }
     }
 
+    if version < 28 {
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS opspilot_sessions (
+                 id          TEXT PRIMARY KEY,
+                 target_kind TEXT NOT NULL CHECK (target_kind IN ('ssh', 'local', 'docker_exec', 'kubectl_exec')),
+                 target_id   TEXT NOT NULL,
+                 host        TEXT,
+                 started_at  INTEGER NOT NULL,
+                 ended_at    INTEGER
+             );
+
+             CREATE TABLE IF NOT EXISTS opspilot_events (
+                 id                   TEXT PRIMARY KEY,
+                 session_id           TEXT NOT NULL REFERENCES opspilot_sessions(id) ON DELETE CASCADE,
+                 source_block_id      INTEGER,
+                 kind                 TEXT NOT NULL CHECK (kind IN (
+                                          'command_observed',
+                                          'suggestion_accepted',
+                                          'suggestion_dismissed'
+                                      )),
+                 host                 TEXT,
+                 cwd                  TEXT,
+                 cwd_source           TEXT NOT NULL CHECK (cwd_source IN ('prompt', 'unknown')),
+                 cwd_confidence       REAL NOT NULL CHECK (cwd_confidence >= 0.0 AND cwd_confidence <= 1.0),
+                 command_redacted     TEXT,
+                 suggestion_id        TEXT,
+                 origin_suggestion_id TEXT,
+                 exit_code            INTEGER,
+                 exit_source          TEXT NOT NULL CHECK (exit_source IN ('unavailable', 'shell_integration')),
+                 occurred_at          INTEGER NOT NULL,
+                 CHECK (
+                   (kind = 'command_observed'
+                    AND source_block_id IS NOT NULL
+                    AND command_redacted IS NOT NULL
+                    AND suggestion_id IS NULL)
+                   OR
+                   (kind IN ('suggestion_accepted', 'suggestion_dismissed')
+                    AND source_block_id IS NULL
+                    AND command_redacted IS NULL
+                    AND suggestion_id IS NOT NULL
+                    AND origin_suggestion_id IS NULL)
+                 )
+             );
+
+             CREATE UNIQUE INDEX IF NOT EXISTS idx_opspilot_events_block_kind
+             ON opspilot_events(session_id, source_block_id, kind)
+             WHERE source_block_id IS NOT NULL;
+
+             CREATE INDEX IF NOT EXISTS idx_opspilot_events_time
+             ON opspilot_events(occurred_at DESC, id DESC);
+
+             CREATE INDEX IF NOT EXISTS idx_opspilot_events_feedback
+             ON opspilot_events(suggestion_id, kind, host, cwd)
+             WHERE suggestion_id IS NOT NULL;",
+        )?;
+    }
+
+    if version < 29 {
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS opspilot_memory_state (
+                 singleton  INTEGER PRIMARY KEY CHECK (singleton = 1),
+                 cleared_at INTEGER NOT NULL
+             );
+             INSERT OR IGNORE INTO opspilot_memory_state (singleton, cleared_at)
+             VALUES (1, -1);
+
+             CREATE TRIGGER IF NOT EXISTS opspilot_events_v1_exit_state_insert
+             BEFORE INSERT ON opspilot_events
+             WHEN NEW.exit_code IS NOT NULL OR NEW.exit_source <> 'unavailable'
+             BEGIN
+                 SELECT RAISE(ABORT, 'opspilot v1 exit state must be unavailable');
+             END;
+
+             CREATE TRIGGER IF NOT EXISTS opspilot_events_v1_exit_state_update
+             BEFORE UPDATE OF exit_code, exit_source ON opspilot_events
+             WHEN NEW.exit_code IS NOT NULL OR NEW.exit_source <> 'unavailable'
+             BEGIN
+                 SELECT RAISE(ABORT, 'opspilot v1 exit state must be unavailable');
+             END;",
+        )?;
+    }
+
     if version < SCHEMA_VERSION {
         conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
     }
@@ -1098,5 +1180,146 @@ mod tests {
         migrate(&conn).unwrap();
 
         assert!(!column_exists(&conn, "telnet_profiles", "login_script_legacy_pending").unwrap());
+    }
+
+    #[test]
+    fn migration_28_creates_opspilot_memory_tables_and_indexes() {
+        let conn = Connection::open_in_memory().unwrap();
+
+        migrate(&conn).unwrap();
+
+        let version: u32 = conn
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, 29);
+        assert!(table_exists(&conn, "opspilot_sessions").unwrap());
+        assert!(table_exists(&conn, "opspilot_events").unwrap());
+        assert!(table_exists(&conn, "opspilot_memory_state").unwrap());
+        for index in [
+            "idx_opspilot_events_block_kind",
+            "idx_opspilot_events_time",
+            "idx_opspilot_events_feedback",
+        ] {
+            let exists: bool = conn
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = ?1)",
+                    [index],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert!(exists, "missing index {index}");
+        }
+    }
+
+    #[test]
+    fn migration_28_enforces_event_kinds_and_shapes() {
+        let conn = Connection::open_in_memory().unwrap();
+        migrate(&conn).unwrap();
+        conn.execute(
+            "INSERT INTO opspilot_sessions
+             (id, target_kind, target_id, started_at)
+             VALUES ('s1', 'ssh', 'p1', 1)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO opspilot_events
+             (id, session_id, source_block_id, kind, cwd_source, cwd_confidence,
+              command_redacted, exit_source, occurred_at)
+             VALUES ('command', 's1', 1, 'command_observed', 'prompt', 0.8,
+                     'pwd', 'unavailable', 1)",
+            [],
+        )
+        .unwrap();
+        for (id, kind) in [
+            ("accepted", "suggestion_accepted"),
+            ("dismissed", "suggestion_dismissed"),
+        ] {
+            conn.execute(
+                "INSERT INTO opspilot_events
+                 (id, session_id, kind, cwd_source, cwd_confidence,
+                  suggestion_id, exit_source, occurred_at)
+                 VALUES (?1, 's1', ?2, 'unknown', 0.0, 'logs', 'unavailable', 2)",
+                params![id, kind],
+            )
+            .unwrap();
+        }
+        assert!(conn
+            .execute(
+                "INSERT INTO opspilot_events
+                 (id, session_id, kind, cwd_source, cwd_confidence,
+                  suggestion_id, exit_source, occurred_at)
+                 VALUES ('invalid', 's1', 'invented', 'unknown', 0.0,
+                         'logs', 'unavailable', 3)",
+                [],
+            )
+            .is_err());
+        assert!(conn
+            .execute(
+                "INSERT INTO opspilot_events
+                 (id, session_id, kind, cwd_source, cwd_confidence,
+                  command_redacted, exit_source, occurred_at)
+                 VALUES ('bad-shape', 's1', 'command_observed', 'unknown', 0.0,
+                         'pwd', 'unavailable', 3)",
+                [],
+            )
+            .is_err());
+        assert!(conn
+            .execute(
+                "INSERT INTO opspilot_events
+                 (id, session_id, source_block_id, kind, cwd_source, cwd_confidence,
+                  command_redacted, exit_code, exit_source, occurred_at)
+                 VALUES ('exit-code', 's1', 2, 'command_observed', 'prompt', 0.8,
+                         'pwd', 0, 'unavailable', 4)",
+                [],
+            )
+            .is_err());
+        assert!(conn
+            .execute(
+                "INSERT INTO opspilot_events
+                 (id, session_id, source_block_id, kind, cwd_source, cwd_confidence,
+                  command_redacted, exit_source, occurred_at)
+                 VALUES ('exit-source', 's1', 3, 'command_observed', 'prompt', 0.8,
+                         'pwd', 'shell_integration', 5)",
+                [],
+            )
+            .is_err());
+    }
+
+    #[test]
+    fn migration_28_deduplicates_only_non_null_command_blocks() {
+        let conn = Connection::open_in_memory().unwrap();
+        migrate(&conn).unwrap();
+        conn.execute(
+            "INSERT INTO opspilot_sessions
+             (id, target_kind, target_id, started_at)
+             VALUES ('s1', 'ssh', 'p1', 1)",
+            [],
+        )
+        .unwrap();
+        let insert_command = |id: &str| {
+            conn.execute(
+                "INSERT INTO opspilot_events
+                 (id, session_id, source_block_id, kind, cwd_source, cwd_confidence,
+                  command_redacted, exit_source, occurred_at)
+                 VALUES (?1, 's1', 7, 'command_observed', 'prompt', 0.8,
+                         'pwd', 'unavailable', 1)",
+                [id],
+            )
+        };
+        insert_command("command-1").unwrap();
+        assert!(insert_command("command-2").is_err());
+
+        for id in ["feedback-1", "feedback-2"] {
+            conn.execute(
+                "INSERT INTO opspilot_events
+                 (id, session_id, kind, cwd_source, cwd_confidence,
+                  suggestion_id, exit_source, occurred_at)
+                 VALUES (?1, 's1', 'suggestion_accepted', 'unknown', 0.0,
+                         'logs', 'unavailable', 2)",
+                [id],
+            )
+            .unwrap();
+        }
     }
 }

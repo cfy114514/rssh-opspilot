@@ -7,6 +7,7 @@
   import { t } from "../i18n/index.svelte.ts";
   import Select from "./Select.svelte";
   import Modal from "./Modal.svelte";
+  import OpsPilotMemorySettings from "./OpsPilotMemorySettings.svelte";
 
   let shells = $state<string[]>([]);
   let selectedShell = $state("");
@@ -254,6 +255,9 @@
       <span class="slider"></span>
     </label>
   </div>
+
+  <div class="section-label">{t("settings.shell.opspilot_memory.title")}</div>
+  <OpsPilotMemorySettings />
 
   <div class="section-label">{t("settings.shell.interaction")}</div>
   <!-- 终端交互：选中即复制（开关）+ 关闭标签页确认（开关）+ 右键动作（下拉）合在一张卡片，

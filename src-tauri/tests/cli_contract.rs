@@ -20,6 +20,8 @@ fn rssh_in_home(home: &Path, args: &[&str], input: &str) -> Output {
     let mut child = Command::new(env!("CARGO_BIN_EXE_rssh-cli"))
         .args(args)
         .env("HOME", home)
+        .env("USERPROFILE", home)
+        .env("RSSH_DATA_DIR", home.join(".rssh"))
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -32,6 +34,50 @@ fn rssh_in_home(home: &Path, args: &[&str], input: &str) -> Output {
         .write_all(input.as_bytes())
         .expect("write CLI input");
     child.wait_with_output().expect("wait for rssh CLI")
+}
+
+fn seed_opspilot_memory(home: &Path) {
+    use rssh_lib::db::opspilot_memory::*;
+
+    let db = Db::open(&home.join(".rssh")).expect("open test database");
+    start_session(
+        &db,
+        &OpsPilotSessionInput {
+            id: "session-1".into(),
+            target_kind: OpsPilotTargetKind::Ssh,
+            target_id: "profile-1".into(),
+            host: Some("app.example".into()),
+            started_at: 1,
+        },
+    )
+    .unwrap();
+    append_event(
+        &db,
+        &OpsPilotEventInput {
+            id: "event-1".into(),
+            session_id: "session-1".into(),
+            source_block_id: Some(1),
+            kind: OpsPilotEventKind::CommandObserved,
+            host: Some("app.example".into()),
+            cwd: Some("/srv/app".into()),
+            cwd_source: OpsPilotCwdSource::Prompt,
+            cwd_confidence: 0.8,
+            command_redacted: Some("pwd".into()),
+            suggestion_id: None,
+            origin_suggestion_id: None,
+            exit_code: None,
+            exit_source: OpsPilotExitSource::Unavailable,
+            occurred_at: 2,
+        },
+    )
+    .unwrap();
+}
+
+fn read_opspilot_event_count(home: &Path) -> u64 {
+    let db = Db::open(&home.join(".rssh")).expect("open test database");
+    rssh_lib::db::opspilot_memory::memory_stats(&db)
+        .unwrap()
+        .events
 }
 
 fn assert_dynamic_completion_registration(shell: &str) {
@@ -59,6 +105,8 @@ fn complete_in_home(home: &Path, words: &[&str]) -> Output {
         .arg("--")
         .args(words)
         .env("HOME", home)
+        .env("USERPROFILE", home)
+        .env("RSSH_DATA_DIR", home.join(".rssh"))
         .env("_RSSH_COMPLETE", "fish")
         .output()
         .expect("run dynamic completion")
@@ -70,7 +118,13 @@ fn root_help_exposes_only_typed_command_families() {
     assert!(output.status.success());
 
     let stdout = String::from_utf8(output.stdout).expect("help is UTF-8");
-    for family in ["profile", "credential", "forward", "group"] {
+    for family in [
+        "profile",
+        "credential",
+        "forward",
+        "group",
+        "opspilot-memory",
+    ] {
         assert!(
             stdout
                 .lines()
@@ -86,6 +140,47 @@ fn root_help_exposes_only_typed_command_families() {
             "legacy {legacy} command still present in:\n{stdout}"
         );
     }
+}
+
+#[test]
+fn opspilot_memory_stats_reports_local_counts_and_timestamps() {
+    let home = tempfile::tempdir().expect("temporary HOME");
+    seed_opspilot_memory(home.path());
+
+    let output = rssh_in_home(home.path(), &["opspilot-memory", "stats"], "");
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "Sessions: 1\nEvents: 1\nOldest event (Unix ms): 2\nNewest event (Unix ms): 2\n"
+    );
+}
+
+#[test]
+fn opspilot_memory_clear_requires_confirmation() {
+    let home = tempfile::tempdir().expect("temporary HOME");
+    seed_opspilot_memory(home.path());
+
+    let declined = rssh_in_home(home.path(), &["opspilot-memory", "clear"], "n\n");
+    assert!(declined.status.success());
+    assert_eq!(read_opspilot_event_count(home.path()), 1);
+
+    let accepted = rssh_in_home(home.path(), &["opspilot-memory", "clear"], "y\n");
+    assert!(accepted.status.success());
+    assert_eq!(read_opspilot_event_count(home.path()), 0);
+}
+
+#[test]
+fn opspilot_memory_clear_yes_is_noninteractive() {
+    let home = tempfile::tempdir().expect("temporary HOME");
+    seed_opspilot_memory(home.path());
+
+    let output = rssh_in_home(home.path(), &["opspilot-memory", "clear", "--yes"], "");
+    assert!(output.status.success());
+    assert_eq!(read_opspilot_event_count(home.path()), 0);
 }
 
 #[test]

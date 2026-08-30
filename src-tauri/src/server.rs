@@ -375,6 +375,25 @@ fn dispatch(
                 &arg::<String>(&args, "id")?,
             ))
         }
+        "opspilot_session_start" => ok(crate::commands::opspilot_memory::session_start(
+            &state.db,
+            &arg(&args, "session")?,
+        )),
+        "opspilot_session_end" => ok(crate::commands::opspilot_memory::session_end(
+            &state.db,
+            &arg::<String>(&args, "sessionId")?,
+            arg(&args, "endedAt")?,
+        )),
+        "opspilot_event_append" => ok(crate::commands::opspilot_memory::event_append(
+            &state.db,
+            &arg(&args, "event")?,
+        )),
+        "opspilot_feedback_stats" => ok(crate::commands::opspilot_memory::feedback_stats(
+            &state.db,
+            &arg(&args, "scope")?,
+        )),
+        "opspilot_memory_stats" => ok(crate::commands::opspilot_memory::memory_stats(&state.db)),
+        "opspilot_memory_clear" => ok(crate::commands::opspilot_memory::memory_clear(&state.db)),
         "set_sync_auto_pull" => ok(crate::commands::sync::set_sync_auto_pull_impl(
             state,
             arg(&args, "provider")?,
@@ -1723,6 +1742,109 @@ fn query_token(q: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn empty_state() -> AppState {
+        let db = Arc::new(crate::db::Db::open_in_memory().unwrap());
+        let secret_store: Arc<dyn crate::secret::SecretStore> =
+            Arc::new(crate::secret::DbStore::new(db.clone()));
+        AppState {
+            db,
+            secret_store,
+            lifecycle_sessions: Mutex::new(HashMap::new()),
+            sessions: Mutex::new(HashMap::new()),
+            pty_sessions: Mutex::new(HashMap::new()),
+            serial_sessions: Mutex::new(HashMap::new()),
+            telnet_sessions: Mutex::new(HashMap::new()),
+            sftp_sessions: Mutex::new(HashMap::new()),
+            transfer_cancels: Mutex::new(HashMap::new()),
+            active_forwards: Mutex::new(HashMap::new()),
+            auth_waiters: Mutex::new(HashMap::new()),
+            passphrase_waiters: Mutex::new(HashMap::new()),
+            host_key_waiters: Mutex::new(HashMap::new()),
+            passphrase_cache: Mutex::new(HashMap::new()),
+            window_groups: Mutex::new(crate::commands::window::WindowGroups::default()),
+            ai_sessions: Mutex::new(HashMap::new()),
+            ai_session_owners: Arc::new(Mutex::new(HashMap::new())),
+            ai_remote_shell_cache: Mutex::new(HashMap::new()),
+            data_dir: std::path::PathBuf::new(),
+        }
+    }
+
+    #[test]
+    fn opspilot_dispatch_matches_tauri_camel_case_contract() {
+        let state = empty_state();
+        let owner = SessionOwner::Headless(uuid::Uuid::new_v4());
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let call = |cmd: &str, args: Value| dispatch(&state, &owner, cmd, args, &tx);
+
+        call(
+            "opspilot_session_start",
+            json!({
+                "session": {
+                    "id": "session-1",
+                    "targetKind": "ssh",
+                    "targetId": "profile-1",
+                    "host": "app.example",
+                    "startedAt": 1
+                }
+            }),
+        )
+        .unwrap();
+        call(
+            "opspilot_event_append",
+            json!({
+                "event": {
+                    "id": "event-1",
+                    "sessionId": "session-1",
+                    "sourceBlockId": null,
+                    "kind": "suggestion_accepted",
+                    "host": "app.example",
+                    "cwd": "/srv/app",
+                    "cwdSource": "unknown",
+                    "cwdConfidence": 0.0,
+                    "commandRedacted": null,
+                    "suggestionId": "logs",
+                    "originSuggestionId": null,
+                    "exitCode": null,
+                    "exitSource": "unavailable",
+                    "occurredAt": 2
+                }
+            }),
+        )
+        .unwrap();
+        let feedback = call(
+            "opspilot_feedback_stats",
+            json!({
+                "scope": {
+                    "targetKind": "ssh",
+                    "targetId": "profile-1",
+                    "host": "app.example",
+                    "cwd": "/srv/app"
+                }
+            }),
+        )
+        .unwrap();
+        assert_eq!(feedback[0]["suggestionId"], "logs");
+        assert_eq!(feedback[0]["accepted"], 1);
+        let stats = call("opspilot_memory_stats", json!({})).unwrap();
+        assert_eq!(stats["sessions"], 1);
+        assert_eq!(stats["events"], 1);
+        call(
+            "opspilot_session_end",
+            json!({ "sessionId": "session-1", "endedAt": 3 }),
+        )
+        .unwrap();
+        assert!(call(
+            "opspilot_session_end",
+            json!({ "session_id": "session-1", "ended_at": 3 }),
+        )
+        .is_err());
+        call("opspilot_memory_clear", json!({})).unwrap();
+        assert_eq!(
+            call("opspilot_memory_stats", json!({})).unwrap()["events"],
+            0
+        );
+    }
 
     #[test]
     fn headless_timeline_target_arg_is_optional() {

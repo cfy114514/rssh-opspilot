@@ -41,19 +41,48 @@ The fork adds a safe, local-first suggestion loop to the existing terminal:
    line is empty.
 4. Clicking a suggestion or pressing `Tab` inserts text into the terminal but
    never submits `Enter` automatically.
-5. Accept/dismiss feedback is stored locally as bounded hashed suggestion ids,
-   allowing later sessions to improve ranking without storing terminal output.
-6. `Ask AI` and `Summarize` pass redacted blocks to RSSH's existing AI panel.
+5. Accepted/dismissed feedback is stored locally and scoped to the current
+   target, host, and working directory so later sessions can improve ranking.
+6. Optional command observations are redacted locally and are off by default.
+   Terminal output is never stored in OpsPilot memory.
+7. `Ask AI` and `Summarize` pass redacted blocks to RSSH's existing AI panel.
 
 The default path is zero-install on the remote server: no agent, shell hook,
 daemon, extra port, hidden `pwd`, or hidden `ls` command is required. Alternate
 buffer programs such as `vim`, `less`, and `top` pause suggestions. The feature
 can be disabled in **Settings → Shell → Next-command suggestions**.
 
+### Local learning and privacy
+
+OpsPilot keeps suggestion feedback in the local SQLite database by default.
+Saving redacted command text is a separate opt-in under **Settings → Shell →
+OpsPilot local learning**. Observation is skipped when redaction cannot be
+loaded or applied, and sensitive inline credential patterns are rejected
+before persistence.
+
+The local ledger stores session metadata, prompt-derived host/cwd context,
+suggestion IDs, and—only when opted in—the redacted command. It has no terminal
+output column, never infers success from output, and does not pretend an exit
+code is available. The newest 5,000 events are retained. OpsPilot memory is
+excluded from configuration export, GitHub sync, WebDAV sync, and import.
+
+Statistics and a confirmed clear action are available in the same settings
+card. The CLI exposes the equivalent local maintenance commands:
+
+```powershell
+rssh opspilot-memory stats
+rssh opspilot-memory clear
+rssh opspilot-memory clear --yes
+```
+
 ### Current safety boundary
 
 - Suggestions are read-only by construction in the LOCAL predictor.
 - Suggestions never execute automatically.
+- Accepting a suggestion only inserts its text for review; it never appends
+  Enter or submits the command.
+- OpsPilot command history is off by default, redacted fail-closed, bounded to
+  5,000 local events, and excluded from sync/export.
 - AI handoff reuses RSSH command-block redaction and fails closed if the policy
   cannot be loaded.
 - Session summaries are candidate Rules/Context JSON for human review; they do

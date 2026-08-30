@@ -38,6 +38,111 @@ async function loadAppModule() {
 
 const local = (id: string) => ({ id, type: "local" as const, label: id });
 
+describe("OpsPilot command history setting", () => {
+  it.each([null, "false", "invalid"])("defaults safely from %j", async (stored) => {
+    invokeMock.mockImplementation(async (command: string) =>
+      command === "get_setting" ? stored : null);
+    const app = await loadAppModule();
+    await expect(app.loadOpsPilotCommandHistoryEnabled()).resolves.toBe(false);
+    expect(app.opsPilotCommandHistoryEnabled()).toBe(false);
+  });
+
+  it("loads only an explicit persisted true value", async () => {
+    invokeMock.mockResolvedValue("true");
+    const app = await loadAppModule();
+    await expect(app.loadOpsPilotCommandHistoryEnabled()).resolves.toBe(true);
+  });
+
+  it("persists the exact setting key and string value", async () => {
+    const app = await loadAppModule();
+    await app.setOpsPilotCommandHistoryEnabled(true);
+    expect(invokeMock).toHaveBeenCalledWith("set_setting", {
+      key: "opspilot_command_history_enabled",
+      value: "true",
+    });
+  });
+
+  it("rolls back the visible value when persistence fails", async () => {
+    const app = await loadAppModule();
+    invokeMock.mockImplementation((command: string) => command === "get_setting"
+      ? Promise.resolve("false")
+      : Promise.reject(new Error("database busy")));
+    await expect(app.setOpsPilotCommandHistoryEnabled(true)).rejects.toThrow("database busy");
+    expect(app.opsPilotCommandHistoryEnabled()).toBe(false);
+  });
+
+  it("rolls consecutive failed writes back to the last persisted value", async () => {
+    const app = await loadAppModule();
+    invokeMock.mockRejectedValue(new Error("database busy"));
+
+    const enable = app.setOpsPilotCommandHistoryEnabled(true);
+    const disable = app.setOpsPilotCommandHistoryEnabled(false);
+    await expect(enable).rejects.toThrow("database busy");
+    await expect(disable).rejects.toThrow("database busy");
+
+    expect(app.opsPilotCommandHistoryEnabled()).toBe(false);
+  });
+
+  it("waits for the persisted baseline before rolling back a failed first write", async () => {
+    let resolveLoad!: (value: string | null) => void;
+    invokeMock.mockImplementation((command: string) => {
+      if (command === "get_setting") {
+        return new Promise((resolve) => { resolveLoad = resolve; });
+      }
+      return Promise.reject(new Error("database busy"));
+    });
+    const app = await loadAppModule();
+
+    const load = app.loadOpsPilotCommandHistoryEnabled();
+    const disable = app.setOpsPilotCommandHistoryEnabled(false);
+    const rejected = expect(disable).rejects.toThrow("database busy");
+    resolveLoad("true");
+    await load;
+    await rejected;
+
+    expect(app.opsPilotCommandHistoryEnabled()).toBe(true);
+  });
+
+  it("serializes rapid opposite writes so the last choice wins persistently", async () => {
+    const releases: Array<() => void> = [];
+    invokeMock.mockImplementation((command: string) => command === "get_setting"
+      ? Promise.resolve("false")
+      : new Promise<void>((resolve) => releases.push(resolve)));
+    const app = await loadAppModule();
+
+    const enable = app.setOpsPilotCommandHistoryEnabled(true);
+    const disable = app.setOpsPilotCommandHistoryEnabled(false);
+    await vi.waitFor(() => expect(releases).toHaveLength(1));
+    expect(app.opsPilotCommandHistoryEnabled()).toBe(false);
+    releases[0]();
+    await vi.waitFor(() => expect(releases).toHaveLength(2));
+    releases[1]();
+    await Promise.all([enable, disable]);
+
+    expect(invokeMock.mock.calls.filter(([command]) => command === "set_setting")).toEqual([
+      ["set_setting", { key: "opspilot_command_history_enabled", value: "true" }],
+      ["set_setting", { key: "opspilot_command_history_enabled", value: "false" }],
+    ]);
+    expect(app.opsPilotCommandHistoryEnabled()).toBe(false);
+  });
+
+  it("queues an explicit choice after the initial persisted load", async () => {
+    let resolveLoad!: (value: string | null) => void;
+    invokeMock
+      .mockImplementationOnce(() => new Promise((resolve) => { resolveLoad = resolve; }))
+      .mockResolvedValueOnce(null);
+    const app = await loadAppModule();
+
+    const load = app.loadOpsPilotCommandHistoryEnabled();
+    const enable = app.setOpsPilotCommandHistoryEnabled(true);
+    resolveLoad("false");
+    await load;
+    await enable;
+
+    expect(app.opsPilotCommandHistoryEnabled()).toBe(true);
+  });
+});
+
 describe("recent Home connections", () => {
   it("records every saved or discovered GUI connection through addTab", async () => {
     const app = await loadAppModule();

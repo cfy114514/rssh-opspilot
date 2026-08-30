@@ -64,4 +64,29 @@ describe("suggestNextCommands", () => {
     });
     expect(ranked[0].id).toBe(accepted.id);
   });
+
+  it("never turns an unknown feedback id into a command suggestion", () => {
+    const suggestions = suggestNextCommands({
+      promptLine: "ops@prod:/var/log$ ",
+      cwd: "/var/log",
+      host: "prod",
+      recentBlocks: [],
+      feedback: {"arbitrary-command": {accepted: 1_000, dismissed: 0}},
+    });
+    expect(suggestions.some((item) => item.id === "arbitrary-command")).toBe(false);
+    expect(suggestions.every((item) => item.source === "local")).toBe(true);
+    expect(suggestions.every((item) => item.risk === "read-only")).toBe(true);
+  });
+
+  it("clamps confidence after extreme feedback counts", () => {
+    const baseline = suggestNextCommands({recentBlocks: []});
+    const feedback = Object.fromEntries(baseline.map((item, index) => [
+      item.id,
+      index === 0
+        ? {accepted: Number.MAX_SAFE_INTEGER, dismissed: 0}
+        : {accepted: 0, dismissed: Number.MAX_SAFE_INTEGER},
+    ]));
+    const ranked = suggestNextCommands({recentBlocks: [], feedback});
+    expect(ranked.every((item) => item.confidence >= 0 && item.confidence <= 1)).toBe(true);
+  });
 });
