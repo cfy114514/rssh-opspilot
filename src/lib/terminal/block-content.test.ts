@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import {
+  extractBlockFirstLogicalLine,
   extractBlockTexts,
   extractBlocksText,
   extractRangeLines,
@@ -120,6 +121,20 @@ describe("extractRangeLines", () => {
   it("returns [] for missing lines", () => {
     const buf = fakeBuf([]);
     expect(extractRangeLines(buf as any, 0, 5)).toEqual([]);
+  });
+});
+
+describe("extractBlockFirstLogicalLine", () => {
+  it("reads only the prompt logical line and excludes following command output", () => {
+    const term = fakeTerm([
+      lineFromSpec("$ printf very-long-command", false),
+      lineFromSpec("command-continuation", true),
+      lineFromSpec("output that must not be materialized", false),
+    ]);
+
+    expect(extractBlockFirstLogicalLine(term, fakeBlock(1, 0, 2))).toBe(
+      "$ printf very-long-commandcommand-continuation",
+    );
   });
 });
 

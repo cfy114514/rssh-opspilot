@@ -65,6 +65,11 @@ enum Cmd {
         #[command(subcommand)]
         action: ConfigCmd,
     },
+    /// Inspect or clear local OpsPilot memory
+    OpspilotMemory {
+        #[command(subcommand)]
+        action: OpsPilotMemoryCmd,
+    },
     /// Generate shell completion script
     Completions {
         /// "zsh", "bash", "fish", or "powershell" (alias: "pwsh")
@@ -152,6 +157,18 @@ enum GroupCmd {
     Rm {
         #[arg(add = ArgValueCompleter::new(commands::completions::complete_groups))]
         name: String,
+    },
+}
+
+#[derive(Subcommand)]
+enum OpsPilotMemoryCmd {
+    /// Show local OpsPilot memory statistics
+    Stats,
+    /// Clear all local OpsPilot memory
+    Clear {
+        /// Confirm without an interactive prompt
+        #[arg(long)]
+        yes: bool,
     },
 }
 
@@ -253,10 +270,15 @@ fn main() {
         return;
     }
 
-    let data_dir = rssh_lib::db::data_dir().unwrap_or_else(|e| {
-        eprintln!("error: {}", format_lib_error(&e));
-        std::process::exit(1);
-    });
+    let data_dir = std::env::var_os("RSSH_DATA_DIR")
+        .filter(|value| !value.is_empty())
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| {
+            rssh_lib::db::data_dir().unwrap_or_else(|e| {
+                eprintln!("error: {}", format_lib_error(&e));
+                std::process::exit(1);
+            })
+        });
     let db = Arc::new(Db::open(&data_dir).unwrap_or_else(|e| {
         eprintln!("error: {}", format_lib_error(&e));
         std::process::exit(1);
@@ -297,6 +319,10 @@ fn main() {
             GroupCmd::Rm { name } => commands::group::cmd_rm_group(&conn, &name),
         },
         Some(Cmd::Config { action }) => commands::config::cmd_config(&conn, action),
+        Some(Cmd::OpspilotMemory { action }) => match action {
+            OpsPilotMemoryCmd::Stats => commands::opspilot_memory::cmd_stats(&conn),
+            OpsPilotMemoryCmd::Clear { yes } => commands::opspilot_memory::cmd_clear(&conn, yes),
+        },
         Some(Cmd::Completions { .. }) => unreachable!("handled before database initialization"),
     };
 

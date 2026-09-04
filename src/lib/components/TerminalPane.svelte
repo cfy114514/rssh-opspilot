@@ -33,7 +33,7 @@
     import {createOutputFeeder, formatBacklogBytes, type OutputFeeder} from "../terminal/output-feeder.ts";
     import {terminalRowHeight} from "../terminal/row-height.ts";
 
-    import {extractBlockTexts, extractBlocksText} from "../terminal/block-content.ts";
+    import {extractBlockFirstLogicalLine, extractBlockTexts, extractBlocksText} from "../terminal/block-content.ts";
     import {redactCommandBlockTexts} from "../terminal/command-block-redaction.ts";
     import {setupTouchScroll} from "../terminal/touch-scroll.ts";
     import {registerBracketedPasteProvider, unregisterBracketedPasteProvider} from "../terminal/bracketed-paste.ts";
@@ -55,10 +55,13 @@
         suggestNextCommands,
         type NextCommandSuggestion,
     } from "../terminal/next-command.ts";
+    import type {OpsPilotFeedbackScope} from "../terminal/next-command-feedback.ts";
+    import {createOpsPilotTerminalController} from "../terminal/opspilot-terminal-controller.ts";
     import {
-        loadNextCommandFeedback,
-        recordNextCommandFeedback,
-    } from "../terminal/next-command-feedback.ts";
+        extractOpsPilotCommandObservation,
+        resolveOpsPilotTarget,
+        type OpsPilotTargetRef,
+    } from "../terminal/opspilot-observation.ts";
 
     let hlRules = $state<HighlightRule[]>([]);
     let hlCompiled = $state<CompiledHighlightRule[]>([]);
@@ -228,6 +231,13 @@
     let nextCommandPromptKey = "";
     let nextCommandTimer: ReturnType<typeof setTimeout> | undefined;
     let nextCommandParsedDisposable: IDisposable | undefined;
+    let nextCommandScope: OpsPilotFeedbackScope | null = null;
+    let nextCommandContextRevision = 0;
+    let opsPilotTarget: OpsPilotTargetRef | null = null;
+    let opsPilotBlockFloor = 0;
+    const observedOpsPilotBlockIds = new Set<number>();
+    const pendingOpsPilotBlockIds = new Set<number>();
+    const opsPilotController = createOpsPilotTerminalController({invoke});
     // `connectAndWire` crosses several awaits. The generation guards the whole
     // component flow; ReservedSessionAttempt owns the finer Pending/Ready state.
     let connectGeneration = 0;
@@ -635,7 +645,9 @@
             clearTimeout(nextCommandTimer);
             nextCommandTimer = undefined;
         }
+        nextCommandContextRevision++;
         nextCommandSuggestions = [];
+        nextCommandScope = null;
     }
 
     function dismissNextCommandSuggestions() {
@@ -645,12 +657,22 @@
             clearTimeout(nextCommandTimer);
             nextCommandTimer = undefined;
         }
+        nextCommandContextRevision++;
         nextCommandSuggestions = [];
+        nextCommandScope = null;
     }
 
     function dismissNextCommandSuggestionsByUser() {
-        for (const suggestion of nextCommandSuggestions) {
-            recordNextCommandFeedback(suggestion.id, "dismissed");
+        const scope = nextCommandScope;
+        if (scope) {
+            for (const suggestion of nextCommandSuggestions) {
+                opsPilotController.recordSuggestion({
+                    suggestion,
+                    outcome: "dismissed",
+                    scope,
+                    originSuggestionId: null,
+                });
+            }
         }
         dismissNextCommandSuggestions();
     }
@@ -661,13 +683,30 @@
         const prompt = parsePromptLine(current);
         // Never replace text the user has already typed after the prompt.
         if (!prompt || prompt.input.trim().length > 0) return;
-        recordNextCommandFeedback(suggestion.id, "accepted");
+        const scope = nextCommandScope;
+        if (scope) {
+            opsPilotController.recordSuggestion({
+                suggestion,
+                outcome: "accepted",
+                scope,
+                originSuggestionId: null,
+            });
+        }
         nextCommandPromptKey = "";
         clearNextCommandSuggestions();
         terminal.focus();
         // xterm.input enters the normal onData path but deliberately omits CR,
         // so accepting a suggestion cannot execute it without user approval.
         terminal.input(suggestion.command);
+    }
+
+    function currentOpsPilotScope(host: string | undefined, cwd: string | undefined): OpsPilotFeedbackScope | null {
+        if (!opsPilotTarget) return null;
+        return {
+            ...opsPilotTarget,
+            host: host ?? meta.host ?? null,
+            cwd: cwd ?? null,
+        };
     }
 
     async function readSafeNextCommandContext(): Promise<{
@@ -738,6 +777,46 @@
         dismissNextCommandSuggestions();
     }
 
+    async function captureOpsPilotObservation(returnedPromptLine: string): Promise<void> {
+        if (
+            !terminal || !blockTracker || isAltBuffer || !opsPilotTarget
+            || !app.opsPilotCommandHistoryEnabled()
+        ) return;
+
+        const candidates = [...blockTracker.blocks]
+            .filter((block) => block.id > opsPilotBlockFloor)
+            .slice(-2)
+            .reverse();
+        for (const block of candidates) {
+            if (observedOpsPilotBlockIds.has(block.id) || pendingOpsPilotBlockIds.has(block.id)) continue;
+            const blockText = extractBlockFirstLogicalLine(terminal, block);
+            if (!blockText) continue;
+            pendingOpsPilotBlockIds.add(block.id);
+            try {
+                const redactionSettings = await app.loadCommandBlockRedaction();
+                const observation = extractOpsPilotCommandObservation({
+                    blockId: block.id,
+                    blockText,
+                    returnedPromptLine,
+                    host: meta.host ?? null,
+                    historyEnabled: app.opsPilotCommandHistoryEnabled(),
+                    redactionSettings,
+                });
+                if (!observation) continue;
+                observedOpsPilotBlockIds.add(block.id);
+                opsPilotController.recordCommand(observation);
+                return;
+            } catch (error) {
+                // Redaction and persistence are fail-closed/best-effort. Never
+                // interrupt terminal rendering or show command text in errors.
+                console.warn("OpsPilot observation skipped", error);
+                return;
+            } finally {
+                pendingOpsPilotBlockIds.delete(block.id);
+            }
+        }
+    }
+
     function scheduleNextCommandSuggestions() {
         if (!terminal || disconnected || !sessionId || isAltBuffer) return;
         if (!isSsh && !isLocal && !isPtyConnector) return;
@@ -762,13 +841,28 @@
             const key = `${sessionId}:${latestBlockId}:${line}`;
             if (key === nextCommandPromptKey) return;
             nextCommandPromptKey = key;
-            nextCommandSuggestions = suggestNextCommands({
+            const scope = currentOpsPilotScope(prompt.host, prompt.cwd);
+            const context = {
                 promptLine: line,
                 cwd: prompt.cwd,
                 host: prompt.host,
                 recentBlocks,
-                feedback: loadNextCommandFeedback(),
-            });
+            };
+            const revision = ++nextCommandContextRevision;
+            nextCommandScope = scope;
+            if (scope) {
+                nextCommandSuggestions = [];
+                void opsPilotController.refreshFeedback({
+                    scope,
+                    revision,
+                    currentRevision: () => nextCommandContextRevision,
+                    rerank: (feedback) => {
+                        nextCommandSuggestions = suggestNextCommands({...context, feedback});
+                    },
+                });
+            } else {
+                nextCommandSuggestions = suggestNextCommands(context);
+            }
         }, 220);
     }
 
@@ -831,6 +925,7 @@
     function announceDisconnected(reason?: string) {
         if (destroyed || disconnected) return;
         disconnected = true;
+        void opsPilotController.disconnect();
         // Stale flood must not keep flowing behind the disconnect banner.
         outputFeeder?.dropPending();
         if (reason) terminal.write(`\r\n\x1b[31m${reason}\x1b[0m\r\n`);
@@ -1238,6 +1333,10 @@
         if (destroyed) return false;
         const generation = ++connectGeneration;
         const isCurrent = () => !destroyed && connectGeneration === generation;
+        void opsPilotController.disconnect();
+        opsPilotTarget = null;
+        observedOpsPilotBlockIds.clear();
+        pendingOpsPilotBlockIds.clear();
         // Input belongs to one Ready session. Release it before the next async
         // connect cycle so keystrokes cannot leak into the superseded handle.
         dataDisposable?.dispose();
@@ -1432,6 +1531,15 @@
 
         const readySessionId = sessionId!;
         wireSessionInput(readySessionId);
+        opsPilotTarget = resolveOpsPilotTarget(tabType, tabId, meta);
+        opsPilotBlockFloor = blockTracker?.blocks.at(-1)?.id ?? 0;
+        if (opsPilotTarget) {
+            opsPilotController.connect({
+                target: opsPilotTarget,
+                host: meta.host ?? null,
+                startedAt: Date.now(),
+            });
+        }
 
         // Sync initial size
         requestAnimationFrame(() => {
@@ -1843,6 +1951,8 @@
             app.loadCommandBlockSplitMode(),
             app.loadCommandBlockMaxLines(),
             app.loadNextCommandSuggestionsEnabled(),
+            app.loadOpsPilotCommandHistoryEnabled(),
+            app.loadCommandBlockRedaction(),
         ]);
         if (destroyed) return;
         blockTracker = createCommandBlockTracker(terminal, commandBlockSplitMode);
@@ -1873,6 +1983,13 @@
             if (isAltBuffer) {
                 dismissNextCommandSuggestions();
                 return;
+            }
+            const returnedPromptLine = [...readViewportText(terminal)]
+                .reverse()
+                .find((item) => item.trim().length > 0) ?? "";
+            const returnedPrompt = parsePromptLine(returnedPromptLine);
+            if (returnedPrompt && returnedPrompt.input.trim().length === 0) {
+                void captureOpsPilotObservation(returnedPromptLine);
             }
             scheduleNextCommandSuggestions();
         });
@@ -2033,6 +2150,7 @@
         nextCommandParsedDisposable?.dispose();
         nextCommandParsedDisposable = undefined;
         clearNextCommandSuggestions();
+        void opsPilotController.dispose();
         // 关 tab 时若停在 prompt 阶段，主动取消让后端 connect 流程跳出，
         // 否则 ssh_connect 会在 worker 线程上挂着等用户输入。
         // The canonical attempt id, not the reusable tab id, identifies the

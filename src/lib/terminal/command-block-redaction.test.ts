@@ -1,5 +1,29 @@
 import { describe, expect, it } from "vitest";
-import { redactCommandBlockTexts } from "./command-block-redaction.ts";
+import {
+  redactCommandBlockTexts,
+  redactCommandText,
+} from "./command-block-redaction.ts";
+
+describe("redactCommandText", () => {
+  it("redacts an extracted command without treating it as prompt text", () => {
+    expect(redactCommandText("curl -H 'Authorization: Bearer abc' /health", {
+      promptEnabled: true,
+      promptReplacement: "anonymous@rssh",
+      rules: [{ pattern: "Authorization: Bearer abc", replacement: "<REDACTED>" }],
+    })).toBe("curl -H '<REDACTED>' /health");
+  });
+
+  it("compiles every rule before returning any partially redacted output", () => {
+    expect(() => redactCommandText("token=abc", {
+      promptEnabled: true,
+      promptReplacement: "anonymous@rssh",
+      rules: [
+        { pattern: "abc", replacement: "<FIRST>" },
+        { pattern: "(?P<name>x)", replacement: "<INVALID>" },
+      ],
+    })).toThrow();
+  });
+});
 
 describe("redactCommandBlockTexts", () => {
   it("recognizes and replaces the first logical-line prompt in every block", () => {

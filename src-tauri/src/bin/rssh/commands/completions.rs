@@ -57,7 +57,11 @@ fn complete_names(kind: NameKind, current: &OsStr) -> Vec<CompletionCandidate> {
     let Some(current) = current.to_str() else {
         return Vec::new();
     };
-    let Ok(data_dir) = rssh_lib::db::data_dir() else {
+    let data_dir = std::env::var_os("RSSH_DATA_DIR")
+        .filter(|value| !value.is_empty())
+        .map(std::path::PathBuf::from)
+        .or_else(|| rssh_lib::db::data_dir().ok());
+    let Some(data_dir) = data_dir else {
         return Vec::new();
     };
     complete_names_from_db(kind, current, &data_dir.join("rssh.db"))

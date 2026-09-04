@@ -895,6 +895,62 @@ export async function setNextCommandSuggestionsEnabled(value: boolean) {
   await invoke("set_setting", { key: "next_command_suggestions", value: String(value) });
 }
 
+/* ─── OpsPilot redacted command history ─── */
+// Feedback is local by default; command text is a separate explicit opt-in.
+let _opsPilotCommandHistoryEnabled = $state(false);
+let _opsPilotCommandHistoryPersisted = false;
+let _opsPilotHistoryLoaded = false;
+let _opsPilotHistoryLoad: Promise<boolean> | null = null;
+let _opsPilotHistoryRevision = 0;
+let _opsPilotHistoryWrite: Promise<void> = Promise.resolve();
+export function opsPilotCommandHistoryEnabled() { return _opsPilotCommandHistoryEnabled; }
+export async function loadOpsPilotCommandHistoryEnabled(): Promise<boolean> {
+  if (_opsPilotHistoryLoaded) return _opsPilotCommandHistoryEnabled;
+  if (!_opsPilotHistoryLoad) {
+    const loadRevision = _opsPilotHistoryRevision;
+    _opsPilotHistoryLoad = (async () => {
+      try {
+        const value = await invoke<string | null>("get_setting", {
+          key: "opspilot_command_history_enabled",
+        });
+        if (_opsPilotHistoryRevision === loadRevision) {
+          _opsPilotCommandHistoryEnabled = value === "true";
+          _opsPilotCommandHistoryPersisted = _opsPilotCommandHistoryEnabled;
+        }
+      } catch (error) {
+        console.warn("[settings] OpsPilot command history load failed:", error);
+        if (_opsPilotHistoryRevision === loadRevision) {
+          _opsPilotCommandHistoryEnabled = false;
+          _opsPilotCommandHistoryPersisted = false;
+        }
+      }
+      _opsPilotHistoryLoaded = true;
+      return _opsPilotCommandHistoryEnabled;
+    })();
+  }
+  return _opsPilotHistoryLoad;
+}
+export async function setOpsPilotCommandHistoryEnabled(value: boolean) {
+  await loadOpsPilotCommandHistoryEnabled();
+  const writeRevision = ++_opsPilotHistoryRevision;
+  _opsPilotCommandHistoryEnabled = value;
+  _opsPilotHistoryLoaded = true;
+  const write = _opsPilotHistoryWrite.then(() => invoke("set_setting", {
+    key: "opspilot_command_history_enabled",
+    value: String(value),
+  }));
+  _opsPilotHistoryWrite = write.then(() => undefined, () => undefined);
+  try {
+    await write;
+    _opsPilotCommandHistoryPersisted = value;
+  } catch (error) {
+    if (_opsPilotHistoryRevision === writeRevision) {
+      _opsPilotCommandHistoryEnabled = _opsPilotCommandHistoryPersisted;
+    }
+    throw error;
+  }
+}
+
 /* ─── Command-block copy redaction ─── */
 export interface CommandBlockRedactRule extends RedactionRule {
   id: string;

@@ -225,6 +225,13 @@ pub fn run() {
             commands::command_block::command_block_list_redact_rules,
             commands::command_block::command_block_save_redact_rule,
             commands::command_block::command_block_delete_redact_rule,
+            // OpsPilot local observation memory
+            commands::opspilot_memory::opspilot_session_start,
+            commands::opspilot_memory::opspilot_session_end,
+            commands::opspilot_memory::opspilot_event_append,
+            commands::opspilot_memory::opspilot_feedback_stats,
+            commands::opspilot_memory::opspilot_memory_stats,
+            commands::opspilot_memory::opspilot_memory_clear,
             // SSH session
             commands::session::ssh_connect,
             commands::session::ssh_write,

@@ -282,7 +282,7 @@ Host inner
         // ~/ 必须被展开为绝对路径（home 在 CI 里可能不同，所以只校验形态）
         let id = e.identity_file.as_deref().unwrap();
         assert!(!id.starts_with("~/"));
-        assert!(id.ends_with("/.ssh/work_ed25519") || id.ends_with("\\.ssh\\work_ed25519"));
+        assert!(id.replace('\\', "/").ends_with("/.ssh/work_ed25519"));
     }
 
     #[test]

@@ -1,3 +1,6 @@
+import type { OpsPilotInvoke } from "./opspilot-ledger.ts";
+import type { OpsPilotTargetKind } from "./opspilot-observation.ts";
+
 export type NextCommandFeedbackOutcome = "accepted" | "dismissed";
 
 export interface NextCommandFeedbackStats {
@@ -6,52 +9,125 @@ export interface NextCommandFeedbackStats {
 }
 
 const STORAGE_KEY = "rssh.next-command.feedback.v1";
-const MAX_ENTRIES = 128;
+const activeCacheInvalidators = new Set<() => void>();
+
+export interface OpsPilotFeedbackScope {
+  targetKind: OpsPilotTargetKind;
+  targetId: string;
+  host: string | null;
+  cwd: string | null;
+}
+
+export interface OpsPilotFeedbackStat {
+  suggestionId: string;
+  accepted: number;
+  dismissed: number;
+  scopeRank: 1 | 2 | 3;
+}
+
+export interface OpsPilotFeedbackCache {
+  peek(scope: OpsPilotFeedbackScope): Record<string, NextCommandFeedbackStats> | null;
+  load(scope: OpsPilotFeedbackScope): Promise<Record<string, NextCommandFeedbackStats>>;
+  clear(): void;
+  dispose(): void;
+}
 
 function storage(): Storage | null {
   return typeof localStorage === "undefined" ? null : localStorage;
 }
 
-function normalize(value: unknown): Record<string, NextCommandFeedbackStats> {
-  if (!value || typeof value !== "object") return {};
+export function clearNextCommandFeedback(): void {
+  try {
+    storage()?.removeItem(STORAGE_KEY);
+  } catch {
+    // Compatibility feedback is best-effort, including explicit local clear.
+  }
+}
+
+function scopeKey(scope: OpsPilotFeedbackScope): string {
+  // Structural JSON avoids separator collisions in user-controlled target IDs.
+  return JSON.stringify([
+    scope.targetKind,
+    scope.targetId,
+    scope.host ?? null,
+    scope.cwd ?? null,
+  ]);
+}
+
+function mapFeedbackRows(value: unknown): Record<string, NextCommandFeedbackStats> {
+  if (!Array.isArray(value)) return {};
   const out: Record<string, NextCommandFeedbackStats> = {};
-  for (const [id, raw] of Object.entries(value as Record<string, unknown>)) {
-    if (!/^local-[0-9a-f]+$/.test(id) || !raw || typeof raw !== "object") continue;
-    const item = raw as Record<string, unknown>;
-    const accepted = Number.isFinite(item.accepted) ? Math.max(0, Math.floor(Number(item.accepted))) : 0;
-    const dismissed = Number.isFinite(item.dismissed) ? Math.max(0, Math.floor(Number(item.dismissed))) : 0;
-    if (accepted === 0 && dismissed === 0) continue;
-    out[id] = {accepted, dismissed};
+  for (const raw of value) {
+    if (!raw || typeof raw !== "object") continue;
+    const row = raw as Partial<OpsPilotFeedbackStat>;
+    if (typeof row.suggestionId !== "string" || row.suggestionId.length === 0) continue;
+    if (!Number.isFinite(row.accepted) || !Number.isFinite(row.dismissed)) continue;
+    out[row.suggestionId] = {
+      accepted: Math.max(0, Math.floor(Number(row.accepted))),
+      dismissed: Math.max(0, Math.floor(Number(row.dismissed))),
+    };
   }
   return out;
 }
 
-export function loadNextCommandFeedback(): Readonly<Record<string, NextCommandFeedbackStats>> {
-  const store = storage();
-  if (!store) return {};
-  try {
-    return normalize(JSON.parse(store.getItem(STORAGE_KEY) ?? "{}"));
-  } catch {
-    return {};
-  }
+export function createOpsPilotFeedbackCache(
+  invoke: OpsPilotInvoke,
+): OpsPilotFeedbackCache {
+  const cached = new Map<string, Record<string, NextCommandFeedbackStats>>();
+  const inFlight = new Map<string, Promise<Record<string, NextCommandFeedbackStats>>>();
+  let disposed = false;
+  let revision = 0;
+
+  const clear = () => {
+    revision += 1;
+    cached.clear();
+    inFlight.clear();
+  };
+  activeCacheInvalidators.add(clear);
+
+  const cache: OpsPilotFeedbackCache = {
+    peek(scope) {
+      return cached.get(scopeKey(scope)) ?? null;
+    },
+
+    load(scope) {
+      const key = scopeKey(scope);
+      const pending = inFlight.get(key);
+      if (pending) return pending;
+
+      const requestRevision = revision;
+      let request!: Promise<Record<string, NextCommandFeedbackStats>>;
+      request = invoke<OpsPilotFeedbackStat[]>("opspilot_feedback_stats", { scope })
+        .then((rows) => {
+          if (revision !== requestRevision) return cached.get(key) ?? {};
+          const mapped = mapFeedbackRows(rows);
+          cached.set(key, mapped);
+          return mapped;
+        })
+        .catch((error: unknown) => {
+          if (revision !== requestRevision) return cached.get(key) ?? {};
+          console.warn("OpsPilot feedback load failed", error);
+          cached.delete(key);
+          return {};
+        })
+        .finally(() => {
+          if (inFlight.get(key) === request) inFlight.delete(key);
+        });
+      inFlight.set(key, request);
+      return request;
+    },
+
+    clear,
+
+    dispose() {
+      if (disposed) return;
+      disposed = true;
+      activeCacheInvalidators.delete(clear);
+    },
+  };
+  return cache;
 }
 
-export function recordNextCommandFeedback(id: string, outcome: NextCommandFeedbackOutcome): void {
-  if (!/^local-[0-9a-f]+$/.test(id)) return;
-  const store = storage();
-  if (!store) return;
-  const current = normalize(loadNextCommandFeedback());
-  const stats = current[id] ?? {accepted: 0, dismissed: 0};
-  stats[outcome] += 1;
-  current[id] = stats;
-
-  const entries = Object.entries(current)
-    .sort((a, b) => (b[1].accepted + b[1].dismissed) - (a[1].accepted + a[1].dismissed))
-    .slice(0, MAX_ENTRIES);
-  try {
-    store.setItem(STORAGE_KEY, JSON.stringify(Object.fromEntries(entries)));
-  } catch {
-    // localStorage can be full or disabled; feedback is best-effort and must
-    // never affect terminal input or the SSH session.
-  }
+export function invalidateOpsPilotFeedbackCaches(): void {
+  for (const clear of activeCacheInvalidators) clear();
 }

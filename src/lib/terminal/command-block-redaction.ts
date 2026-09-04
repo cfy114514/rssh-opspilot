@@ -109,6 +109,16 @@ function applyRulesToText(
   return rules.reduce((current, rule) => applyRuleToText(current, rule), text);
 }
 
+/** Redact an already-extracted command. Prompt replacement is intentionally
+ * skipped because the caller has removed the prompt before this boundary. */
+export function redactCommandText(
+  text: string,
+  settings: CommandBlockRedactionSettings,
+): string {
+  const redaction = compileCommandBlockRedaction(settings);
+  return applyRulesToText(text, redaction.rules);
+}
+
 function redactLine(
   text: string,
   firstLine: boolean,
