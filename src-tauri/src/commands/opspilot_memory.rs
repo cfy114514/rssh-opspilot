@@ -4,7 +4,7 @@ use crate::db::opspilot_memory::{self, *};
 use crate::error::AppResult;
 use crate::state::AppState;
 
-pub fn session_start(db: &crate::db::Db, session: &OpsPilotSessionInput) -> AppResult<()> {
+pub fn session_start(db: &crate::db::Db, session: &OpsPilotSessionInput) -> AppResult<i64> {
     opspilot_memory::start_session(db, session)
 }
 
@@ -35,7 +35,7 @@ pub fn memory_clear(db: &crate::db::Db) -> AppResult<()> {
 pub fn opspilot_session_start(
     state: State<'_, AppState>,
     session: OpsPilotSessionInput,
-) -> AppResult<()> {
+) -> AppResult<i64> {
     session_start(&state.db, &session)
 }
 
@@ -92,7 +92,7 @@ mod tests {
             host: Some("app.example".into()),
             started_at: 1,
         };
-        session_start(&db, &session).unwrap();
+        assert_eq!(session_start(&db, &session).unwrap(), 0);
         event_append(
             &db,
             &OpsPilotEventInput {
@@ -109,6 +109,7 @@ mod tests {
                 origin_suggestion_id: None,
                 exit_code: None,
                 exit_source: OpsPilotExitSource::Unavailable,
+                generation: 0,
                 occurred_at: 2,
             },
         )

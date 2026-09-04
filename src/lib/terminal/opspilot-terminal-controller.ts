@@ -90,24 +90,23 @@ export function createOpsPilotTerminalController(
       ledger?.appendCommand(observation, originSuggestionId);
     },
 
-    recordSuggestion(record) {
+    recordSuggestion({ suggestion, outcome, scope, originSuggestionId: _originSuggestionId }) {
       ledger?.appendSuggestion({
-        kind: record.outcome === "accepted"
+        kind: outcome === "accepted"
           ? "suggestion_accepted"
           : "suggestion_dismissed",
-        suggestionId: record.suggestion.id,
-        host: record.scope.host,
-        cwd: record.scope.cwd,
-        cwdSource: record.scope.cwd === null ? "unknown" : "prompt",
-        cwdConfidence: record.scope.cwd === null ? 0 : 0.8,
+        suggestionId: suggestion.id,
+        host: scope.host,
+        cwd: scope.cwd,
+        cwdSource: scope.cwd === null ? "unknown" : "prompt",
+        cwdConfidence: scope.cwd === null ? 0 : 0.8,
       });
-      if (record.outcome === "accepted") {
+      if (outcome === "accepted") {
         pendingAccepted = {
-          id: record.suggestion.id,
-          command: record.suggestion.command,
+          id: suggestion.id,
+          command: suggestion.command,
         };
       }
-      void record.originSuggestionId;
     },
 
     async refreshFeedback(refresh) {

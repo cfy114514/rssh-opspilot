@@ -40,6 +40,7 @@ interface OpsPilotEventPayload {
   readonly originSuggestionId: string | null;
   readonly exitCode: number | null;
   readonly exitSource: "unavailable";
+  readonly generation?: number;
   readonly occurredAt: number;
 }
 
@@ -63,12 +64,15 @@ export function createOpsPilotLedgerClient(
 
   let queue = Promise.resolve();
   let started = false;
+  let generation: number | null = null;
+  let startPromise: Promise<number> | null = null;
   let ending = false;
   let endPromise: Promise<void> | null = null;
 
-  const ensureStarted = async (): Promise<void> => {
-    if (started) return;
-    await args.invoke("opspilot_session_start", {
+  const ensureStarted = async (): Promise<number> => {
+    if (started && generation !== null) return generation;
+    if (startPromise) return startPromise;
+    startPromise = args.invoke<number>("opspilot_session_start", {
       session: {
         id: args.sessionId,
         targetKind: args.target.targetKind,
@@ -76,8 +80,19 @@ export function createOpsPilotLedgerClient(
         host: args.host,
         startedAt: args.startedAt,
       },
+    }).then((value) => {
+      generation = typeof value === "number" && Number.isSafeInteger(value) && value >= 0
+        ? value
+        : 0;
+      started = true;
+      return generation;
+    }).catch((error) => {
+      // A failed start must not poison later events with a permanently
+      // rejected promise; the next queued event should be able to retry.
+      startPromise = null;
+      throw error;
     });
-    started = true;
+    return startPromise;
   };
 
   const isMissingSession = (error: unknown): boolean => {
@@ -86,23 +101,42 @@ export function createOpsPilotLedgerClient(
       || message === "opspilot_session_missing";
   };
 
+  const isStaleGeneration = (error: unknown): boolean => {
+    const message = error instanceof Error ? error.message : String(error);
+    return message.includes('"code":"opspilot_event_stale_generation"')
+      || message === "opspilot_event_stale_generation";
+  };
+
   const appendWithRecovery = async (event: OpsPilotEventPayload): Promise<void> => {
     try {
       await args.invoke("opspilot_event_append", { event });
     } catch (error) {
-      if (!isMissingSession(error)) throw error;
+      if (!isMissingSession(error) && !isStaleGeneration(error)) throw error;
       started = false;
-      await ensureStarted();
-      await args.invoke("opspilot_event_append", { event });
+      startPromise = null;
+      const restartedGeneration = await ensureStarted();
+      if (event.generation !== undefined && event.generation !== restartedGeneration) return;
+      await args.invoke("opspilot_event_append", {
+        event: event.generation === undefined
+          ? { ...event, generation: restartedGeneration }
+          : event,
+      });
     }
   };
 
-  const enqueueEvent = (event: OpsPilotEventPayload): void => {
+  const enqueueEvent = (
+    event: OpsPilotEventPayload,
+    generationAtCreation: number | null,
+  ): void => {
     if (ending) return;
     queue = queue.then(async () => {
       try {
+        const eventGeneration = generationAtCreation ?? await ensureStarted();
+        const eventWithGeneration = event.generation === undefined
+          ? { ...event, generation: eventGeneration }
+          : event;
         await ensureStarted();
-        await appendWithRecovery(event);
+        await appendWithRecovery(eventWithGeneration);
       } catch (error) {
         warn("OpsPilot memory append failed", error);
       }
@@ -111,6 +145,7 @@ export function createOpsPilotLedgerClient(
 
   return {
     appendCommand(observation, originSuggestionId) {
+      const generationAtCreation = generation;
       enqueueEvent({
         id: createEventId(),
         sessionId: args.sessionId,
@@ -126,10 +161,11 @@ export function createOpsPilotLedgerClient(
         exitCode: observation.exitCode,
         exitSource: observation.exitSource,
         occurredAt: now(),
-      });
+      }, generationAtCreation);
     },
 
     appendSuggestion(suggestion) {
+      const generationAtCreation = generation;
       enqueueEvent({
         id: createEventId(),
         sessionId: args.sessionId,
@@ -145,7 +181,7 @@ export function createOpsPilotLedgerClient(
         exitCode: null,
         exitSource: "unavailable",
         occurredAt: now(),
-      });
+      }, generationAtCreation);
     },
 
     flush() {

@@ -37,6 +37,44 @@ function createLedger(
 }
 
 describe("createOpsPilotLedgerClient", () => {
+  it("attaches the server generation returned for the session to new events", async () => {
+    const calls: Array<{ command: string; args?: Record<string, unknown> }> = [];
+    const { ledger } = createLedger(async (command, args) => {
+      calls.push({ command, args });
+      return command === "opspilot_session_start" ? 7 as never : undefined as never;
+    });
+
+    ledger.appendCommand(commandObservation(1), null);
+    await ledger.flush();
+
+    expect(calls.find((call) => call.command === "opspilot_event_append")?.args?.event)
+      .toMatchObject({ generation: 7 });
+  });
+
+  it("allows a later event to retry after a transient session-start failure", async () => {
+    const calls: string[] = [];
+    let starts = 0;
+    const { ledger, warn } = createLedger(async (command) => {
+      calls.push(command);
+      if (command === "opspilot_session_start" && ++starts === 1) {
+        throw new Error("temporarily unavailable");
+      }
+      return command === "opspilot_session_start" ? 4 as never : undefined as never;
+    });
+
+    ledger.appendCommand(commandObservation(1), null);
+    await ledger.flush();
+    ledger.appendCommand(commandObservation(2), null);
+    await ledger.flush();
+
+    expect(calls).toEqual([
+      "opspilot_session_start",
+      "opspilot_session_start",
+      "opspilot_event_append",
+    ]);
+    expect(warn).toHaveBeenCalledTimes(1);
+  });
+
   it("starts lazily once and emits camelCase command and suggestion events in order", async () => {
     const calls: Array<{ command: string; args?: Record<string, unknown> }> = [];
     const { ledger } = createLedger(async (command, args) => {
@@ -83,6 +121,7 @@ describe("createOpsPilotLedgerClient", () => {
           originSuggestionId: "suggestion-1",
           exitCode: null,
           exitSource: "unavailable",
+          generation: 0,
           occurredAt: 201,
         } },
       },
@@ -102,6 +141,7 @@ describe("createOpsPilotLedgerClient", () => {
           originSuggestionId: null,
           exitCode: null,
           exitSource: "unavailable",
+          generation: 0,
           occurredAt: 202,
         } },
       },
@@ -175,6 +215,30 @@ describe("createOpsPilotLedgerClient", () => {
       "opspilot_session_start",
       "opspilot_event_append",
     ]);
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  it("drops a stale queued event after clear and refreshes the generation for later events", async () => {
+    const calls: Array<{ command: string; args?: Record<string, unknown> }> = [];
+    let starts = 0;
+    let appends = 0;
+    const { ledger, warn } = createLedger(async (command, args) => {
+      calls.push({ command, args });
+      if (command === "opspilot_session_start") return (starts++ === 0 ? 0 : 1) as never;
+      if (command === "opspilot_event_append" && appends++ === 0) {
+        throw new Error('__rssh_err__|{"code":"opspilot_event_stale_generation","params":{}}');
+      }
+      return undefined as never;
+    });
+
+    ledger.appendCommand(commandObservation(1), null);
+    await ledger.flush();
+    ledger.appendCommand(commandObservation(2), null);
+    await ledger.flush();
+
+    expect(calls.filter((call) => call.command === "opspilot_event_append")
+      .map((call) => (call.args?.event as { generation: number }).generation))
+      .toEqual([0, 1]);
     expect(warn).not.toHaveBeenCalled();
   });
 

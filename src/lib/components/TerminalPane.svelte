@@ -33,7 +33,7 @@
     import {createOutputFeeder, formatBacklogBytes, type OutputFeeder} from "../terminal/output-feeder.ts";
     import {terminalRowHeight} from "../terminal/row-height.ts";
 
-    import {extractBlockTexts, extractBlocksText} from "../terminal/block-content.ts";
+    import {extractBlockFirstLogicalLine, extractBlockTexts, extractBlocksText} from "../terminal/block-content.ts";
     import {redactCommandBlockTexts} from "../terminal/command-block-redaction.ts";
     import {setupTouchScroll} from "../terminal/touch-scroll.ts";
     import {registerBracketedPasteProvider, unregisterBracketedPasteProvider} from "../terminal/bracketed-paste.ts";
@@ -789,7 +789,7 @@
             .reverse();
         for (const block of candidates) {
             if (observedOpsPilotBlockIds.has(block.id) || pendingOpsPilotBlockIds.has(block.id)) continue;
-            const blockText = extractBlockTexts(terminal, [block], foldStore)[0];
+            const blockText = extractBlockFirstLogicalLine(terminal, block);
             if (!blockText) continue;
             pendingOpsPilotBlockIds.add(block.id);
             try {

@@ -1,4 +1,4 @@
-use rusqlite::params;
+use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
 
 use super::Db;
@@ -7,6 +7,7 @@ use crate::error::{AppError, AppResult};
 pub const MAX_EVENTS: i64 = 5_000;
 
 const MAX_ID_CHARS: usize = 255;
+const MAX_TARGET_ID_CHARS: usize = 2_048;
 const MAX_HOST_CHARS: usize = 255;
 const MAX_CWD_CHARS: usize = 2_048;
 const MAX_COMMAND_CHARS: usize = 4_096;
@@ -107,6 +108,8 @@ pub struct OpsPilotEventInput {
     pub origin_suggestion_id: Option<String>,
     pub exit_code: Option<i32>,
     pub exit_source: OpsPilotExitSource,
+    #[serde(default)]
+    pub generation: i64,
     pub occurred_at: i64,
 }
 
@@ -152,6 +155,14 @@ fn validate_required(value: &str, field: &'static str) -> AppResult<()> {
     Ok(())
 }
 
+fn validate_target_id(value: &str) -> AppResult<()> {
+    let len = value.chars().count();
+    if value.trim().is_empty() || len > MAX_TARGET_ID_CHARS {
+        return Err(invalid("targetId"));
+    }
+    Ok(())
+}
+
 fn normalize_optional(value: &Option<String>) -> Option<String> {
     value.as_ref().filter(|v| !v.trim().is_empty()).cloned()
 }
@@ -172,7 +183,7 @@ fn validate_optional(
 
 fn validate_session(session: &OpsPilotSessionInput) -> AppResult<()> {
     validate_required(&session.id, "id")?;
-    validate_required(&session.target_id, "targetId")?;
+    validate_target_id(&session.target_id)?;
     validate_optional(&session.host, "host", MAX_HOST_CHARS)?;
     if session.started_at < 0 {
         return Err(invalid("startedAt"));
@@ -197,6 +208,7 @@ fn validate_event(event: &OpsPilotEventInput) -> AppResult<()> {
         MAX_ID_CHARS,
     )?;
     if event.occurred_at < 0
+        || event.generation < 0
         || !event.cwd_confidence.is_finite()
         || !(0.0..=1.0).contains(&event.cwd_confidence)
         || event.source_block_id.is_some_and(|id| id < 0)
@@ -235,23 +247,34 @@ fn validate_event(event: &OpsPilotEventInput) -> AppResult<()> {
     Ok(())
 }
 
-pub fn start_session(db: &Db, session: &OpsPilotSessionInput) -> AppResult<()> {
+pub fn start_session(db: &Db, session: &OpsPilotSessionInput) -> AppResult<i64> {
     validate_session(session)?;
     let host = normalize_optional(&session.host);
-    let conn = db.lock()?;
-    conn.execute(
-        "INSERT OR IGNORE INTO opspilot_sessions
-         (id, target_kind, target_id, host, started_at)
-         VALUES (?1, ?2, ?3, ?4, ?5)",
-        params![
-            session.id,
-            session.target_kind.as_str(),
-            session.target_id,
-            host,
-            session.started_at
-        ],
-    )?;
-    Ok(())
+    db.with_transaction(|tx| {
+        let generation: i64 = tx.query_row(
+            "SELECT clear_generation FROM opspilot_memory_state WHERE singleton = 1",
+            [],
+            |row| row.get(0),
+        )?;
+        tx.execute(
+            "INSERT OR IGNORE INTO opspilot_sessions
+             (id, target_kind, target_id, host, started_at, generation)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![
+                session.id,
+                session.target_kind.as_str(),
+                session.target_id,
+                host,
+                session.started_at,
+                generation,
+            ],
+        )?;
+        Ok(tx.query_row(
+            "SELECT generation FROM opspilot_sessions WHERE id = ?1",
+            [&session.id],
+            |row| row.get(0),
+        )?)
+    })
 }
 
 pub fn end_session(db: &Db, id: &str, ended_at: i64) -> AppResult<()> {
@@ -284,34 +307,42 @@ pub fn append_event(db: &Db, event: &OpsPilotEventInput) -> AppResult<()> {
     let origin_suggestion_id = normalize_optional(&event.origin_suggestion_id);
 
     db.with_transaction(|tx| {
-        let cleared_at: i64 = tx.query_row(
-            "SELECT cleared_at FROM opspilot_memory_state WHERE singleton = 1",
+        let clear_generation: i64 = tx.query_row(
+            "SELECT clear_generation FROM opspilot_memory_state WHERE singleton = 1",
             [],
             |row| row.get(0),
         )?;
-        if event.occurred_at <= cleared_at {
+        if event.generation != clear_generation {
             return Err(AppError::config(
-                "opspilot_event_before_clear",
+                "opspilot_event_stale_generation",
                 serde_json::json!({}),
             ));
         }
-        let session_exists: bool = tx.query_row(
-            "SELECT EXISTS(SELECT 1 FROM opspilot_sessions WHERE id = ?1)",
-            [&event.session_id],
-            |row| row.get(0),
-        )?;
-        if !session_exists {
+        let session_generation: Option<i64> = tx
+            .query_row(
+                "SELECT generation FROM opspilot_sessions WHERE id = ?1",
+                [&event.session_id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        let Some(session_generation) = session_generation else {
             return Err(AppError::not_found(
                 "opspilot_session_missing",
                 serde_json::json!({ "id": event.session_id }),
+            ));
+        };
+        if session_generation != event.generation {
+            return Err(AppError::config(
+                "opspilot_event_stale_generation",
+                serde_json::json!({}),
             ));
         }
         tx.execute(
             "INSERT INTO opspilot_events
              (id, session_id, source_block_id, kind, host, cwd, cwd_source,
               cwd_confidence, command_redacted, suggestion_id, origin_suggestion_id,
-              exit_code, exit_source, occurred_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
+              exit_code, exit_source, generation, occurred_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
              ON CONFLICT DO NOTHING",
             params![
                 event.id,
@@ -327,6 +358,7 @@ pub fn append_event(db: &Db, event: &OpsPilotEventInput) -> AppResult<()> {
                 origin_suggestion_id,
                 event.exit_code,
                 event.exit_source.as_str(),
+                event.generation,
                 event.occurred_at,
             ],
         )?;
@@ -338,21 +370,22 @@ pub fn append_event(db: &Db, event: &OpsPilotEventInput) -> AppResult<()> {
                 "SELECT DISTINCT session_id FROM (
                      SELECT session_id FROM opspilot_events
                      ORDER BY occurred_at DESC, id DESC
-                     LIMIT -1 OFFSET 5000
+                     LIMIT -1 OFFSET ?1
                  )",
             )?;
             let ids = stmt
-                .query_map([], |row| row.get::<_, String>(0))?
+                .query_map([MAX_EVENTS], |row| row.get::<_, String>(0))?
                 .collect::<Result<Vec<_>, _>>()?;
             ids
         };
-        tx.execute_batch(
+        tx.execute(
             "DELETE FROM opspilot_events
              WHERE id IN (
                  SELECT id FROM opspilot_events
                  ORDER BY occurred_at DESC, id DESC
-                 LIMIT -1 OFFSET 5000
+                 LIMIT -1 OFFSET ?1
              );",
+            [MAX_EVENTS],
         )?;
         for session_id in trimmed_session_ids {
             tx.execute(
@@ -371,7 +404,7 @@ pub fn feedback_stats(
     db: &Db,
     scope: &OpsPilotFeedbackScope,
 ) -> AppResult<Vec<OpsPilotFeedbackStat>> {
-    validate_required(&scope.target_id, "targetId")?;
+    validate_target_id(&scope.target_id)?;
     validate_optional(&scope.host, "host", MAX_HOST_CHARS)?;
     validate_optional(&scope.cwd, "cwd", MAX_CWD_CHARS)?;
     let host = normalize_optional(&scope.host);
@@ -388,22 +421,25 @@ pub fn feedback_stats(
                       WHEN ?3 IS NOT NULL
                            AND s.target_kind = ?1 AND s.target_id = ?2
                            AND e.host = ?3 THEN 2
-                      ELSE 1
+                      WHEN s.target_kind = ?1 AND s.target_id = ?2 THEN 1
+                      ELSE 0
                     END AS scope_rank
              FROM opspilot_events e
              JOIN opspilot_sessions s ON s.id = e.session_id
              WHERE e.suggestion_id IS NOT NULL
                AND e.kind IN ('suggestion_accepted', 'suggestion_dismissed')
+         ), scoped AS (
+             SELECT * FROM matched WHERE scope_rank > 0
          ), best AS (
              SELECT suggestion_id, MAX(scope_rank) AS scope_rank
-             FROM matched
+             FROM scoped
              GROUP BY suggestion_id
          )
          SELECT m.suggestion_id,
                 SUM(CASE WHEN m.kind = 'suggestion_accepted' THEN 1 ELSE 0 END),
                 SUM(CASE WHEN m.kind = 'suggestion_dismissed' THEN 1 ELSE 0 END),
                 b.scope_rank
-         FROM matched m
+         FROM scoped m
          JOIN best b
            ON b.suggestion_id = m.suggestion_id
           AND b.scope_rank = m.scope_rank
@@ -445,29 +481,24 @@ pub fn memory_stats(db: &Db) -> AppResult<OpsPilotMemoryStats> {
     })
 }
 
-pub fn clear_at(db: &Db, cleared_at: i64) -> AppResult<()> {
-    if cleared_at < 0 {
-        return Err(invalid("clearedAt"));
-    }
+pub fn clear(db: &Db) -> AppResult<()> {
     db.with_transaction(|tx| {
+        let current_generation: i64 = tx.query_row(
+            "SELECT clear_generation FROM opspilot_memory_state WHERE singleton = 1",
+            [],
+            |row| row.get(0),
+        )?;
+        let next_generation = current_generation
+            .checked_add(1)
+            .ok_or_else(|| invalid("clearGeneration"))?;
         tx.execute("DELETE FROM opspilot_events", [])?;
         tx.execute("DELETE FROM opspilot_sessions", [])?;
         tx.execute(
-            "INSERT INTO opspilot_memory_state (singleton, cleared_at) VALUES (1, ?1)
-             ON CONFLICT(singleton) DO UPDATE SET cleared_at = MAX(cleared_at, excluded.cleared_at)",
-            [cleared_at],
+            "UPDATE opspilot_memory_state SET clear_generation = ?1 WHERE singleton = 1",
+            [next_generation],
         )?;
         Ok(())
     })
-}
-
-pub fn clear(db: &Db) -> AppResult<()> {
-    let cleared_at = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis()
-        .min(i64::MAX as u128) as i64;
-    clear_at(db, cleared_at)
 }
 
 #[cfg(test)]
@@ -499,6 +530,7 @@ mod tests {
             origin_suggestion_id: None,
             exit_code: None,
             exit_source: OpsPilotExitSource::Unavailable,
+            generation: 0,
             occurred_at: index,
         }
     }
@@ -526,6 +558,7 @@ mod tests {
             origin_suggestion_id: None,
             exit_code: None,
             exit_source: OpsPilotExitSource::Unavailable,
+            generation: 0,
             occurred_at,
         }
     }
@@ -606,9 +639,27 @@ mod tests {
     }
 
     #[test]
+    fn accepts_connector_target_ids_longer_than_uuid_sized_ids() {
+        let db = crate::db::Db::open_in_memory().unwrap();
+        let mut long_target = session("long-target", 1);
+        long_target.target_id = "k".repeat(2_048);
+        start_session(&db, &long_target).unwrap();
+
+        long_target.id = "too-long-target".into();
+        long_target.target_id.push('x');
+        assert_eq!(
+            start_session(&db, &long_target).unwrap_err().code(),
+            "opspilot_memory_invalid"
+        );
+    }
+
+    #[test]
     fn feedback_uses_only_the_best_available_scope_per_suggestion() {
         let db = crate::db::Db::open_in_memory().unwrap();
         start_session(&db, &session("session-1", 1)).unwrap();
+        let mut unrelated_session = session("unrelated-session", 1);
+        unrelated_session.target_id = "profile-2".into();
+        start_session(&db, &unrelated_session).unwrap();
         append_event(
             &db,
             &feedback_event(
@@ -619,6 +670,19 @@ mod tests {
                 None,
                 None,
                 1,
+            ),
+        )
+        .unwrap();
+        append_event(
+            &db,
+            &feedback_event(
+                "unrelated",
+                "unrelated-session",
+                "unrelated-suggestion",
+                OpsPilotEventKind::SuggestionAccepted,
+                Some("other.example"),
+                Some("/other"),
+                4,
             ),
         )
         .unwrap();
@@ -692,23 +756,39 @@ mod tests {
         let db = crate::db::Db::open_in_memory().unwrap();
         start_session(&db, &session("session-1", 1)).unwrap();
         append_event(&db, &command_event("session-1", 10)).unwrap();
-        clear_at(&db, 20).unwrap();
+        clear(&db).unwrap();
 
         let mut old = command_event("session-1", 15);
         old.id = "queued-before-clear".into();
         assert_eq!(
             append_event(&db, &old).unwrap_err().code(),
-            "opspilot_event_before_clear"
+            "opspilot_event_stale_generation"
         );
 
         let mut fresh = command_event("session-1", 21);
         fresh.id = "after-clear".into();
+        fresh.generation = 1;
         assert_eq!(
             append_event(&db, &fresh).unwrap_err().code(),
             "opspilot_session_missing"
         );
         start_session(&db, &session("session-1", 1)).unwrap();
         append_event(&db, &fresh).unwrap();
+        assert_eq!(memory_stats(&db).unwrap().events, 1);
+    }
+
+    #[test]
+    fn clear_allows_new_events_when_the_wall_clock_moves_backward() {
+        let db = crate::db::Db::open_in_memory().unwrap();
+        start_session(&db, &session("session-1", 10)).unwrap();
+        append_event(&db, &command_event("session-1", 20)).unwrap();
+        clear(&db).unwrap();
+        start_session(&db, &session("session-1", 0)).unwrap();
+
+        let mut restarted = command_event("session-1", 0);
+        restarted.id = "after-clock-rollback".into();
+        restarted.generation = 1;
+        append_event(&db, &restarted).unwrap();
         assert_eq!(memory_stats(&db).unwrap().events, 1);
     }
 

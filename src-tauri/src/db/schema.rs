@@ -2,7 +2,7 @@ use rusqlite::{params, Connection};
 
 use crate::error::AppResult;
 
-const SCHEMA_VERSION: u32 = 29;
+const SCHEMA_VERSION: u32 = 30;
 
 fn column_exists(conn: &Connection, table: &str, col: &str) -> AppResult<bool> {
     let mut stmt = conn.prepare("SELECT 1 FROM pragma_table_info(?1) WHERE name = ?2")?;
@@ -606,7 +606,8 @@ pub fn migrate(conn: &Connection) -> AppResult<()> {
                  target_id   TEXT NOT NULL,
                  host        TEXT,
                  started_at  INTEGER NOT NULL,
-                 ended_at    INTEGER
+                 ended_at    INTEGER,
+                 generation  INTEGER NOT NULL DEFAULT 0
              );
 
              CREATE TABLE IF NOT EXISTS opspilot_events (
@@ -627,6 +628,7 @@ pub fn migrate(conn: &Connection) -> AppResult<()> {
                  origin_suggestion_id TEXT,
                  exit_code            INTEGER,
                  exit_source          TEXT NOT NULL CHECK (exit_source IN ('unavailable', 'shell_integration')),
+                 generation           INTEGER NOT NULL DEFAULT 0,
                  occurred_at          INTEGER NOT NULL,
                  CHECK (
                    (kind = 'command_observed'
@@ -659,7 +661,8 @@ pub fn migrate(conn: &Connection) -> AppResult<()> {
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS opspilot_memory_state (
                  singleton  INTEGER PRIMARY KEY CHECK (singleton = 1),
-                 cleared_at INTEGER NOT NULL
+                 cleared_at INTEGER NOT NULL,
+                 clear_generation INTEGER NOT NULL DEFAULT 0
              );
              INSERT OR IGNORE INTO opspilot_memory_state (singleton, cleared_at)
              VALUES (1, -1);
@@ -678,6 +681,33 @@ pub fn migrate(conn: &Connection) -> AppResult<()> {
                  SELECT RAISE(ABORT, 'opspilot v1 exit state must be unavailable');
              END;",
         )?;
+    }
+
+    if version < 30 {
+        if table_exists(conn, "opspilot_sessions")?
+            && !column_exists(conn, "opspilot_sessions", "generation")?
+        {
+            conn.execute_batch(
+                "ALTER TABLE opspilot_sessions
+                 ADD COLUMN generation INTEGER NOT NULL DEFAULT 0;",
+            )?;
+        }
+        if table_exists(conn, "opspilot_events")?
+            && !column_exists(conn, "opspilot_events", "generation")?
+        {
+            conn.execute_batch(
+                "ALTER TABLE opspilot_events
+                 ADD COLUMN generation INTEGER NOT NULL DEFAULT 0;",
+            )?;
+        }
+        if table_exists(conn, "opspilot_memory_state")?
+            && !column_exists(conn, "opspilot_memory_state", "clear_generation")?
+        {
+            conn.execute_batch(
+                "ALTER TABLE opspilot_memory_state
+                 ADD COLUMN clear_generation INTEGER NOT NULL DEFAULT 0;",
+            )?;
+        }
     }
 
     if version < SCHEMA_VERSION {
@@ -1191,7 +1221,7 @@ mod tests {
         let version: u32 = conn
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 29);
+        assert_eq!(version, 30);
         assert!(table_exists(&conn, "opspilot_sessions").unwrap());
         assert!(table_exists(&conn, "opspilot_events").unwrap());
         assert!(table_exists(&conn, "opspilot_memory_state").unwrap());

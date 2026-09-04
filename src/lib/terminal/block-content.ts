@@ -104,6 +104,34 @@ export function extractBlocksText(
   return extractBlockTexts(term, blocks, foldStore).join("\n");
 }
 
+/**
+ * Read only the first logical line of a block.
+ *
+ * Observation capture only needs the submitted prompt and command; walking
+ * the whole block would materialize potentially large command output on every
+ * returned prompt. The block marker is placed at the logical line start, so
+ * stop as soon as the first non-wrapped row after it is reached.
+ */
+export function extractBlockFirstLogicalLine(
+  term: Terminal,
+  block: CommandBlock,
+): string | null {
+  if (block.start.isDisposed) return null;
+  const buf = term.buffer.active;
+  const first = buf.getLine(block.start.line);
+  if (!first) return null;
+
+  const lines: IBufferLine[] = [first];
+  let lineNumber = block.start.line + 1;
+  while (true) {
+    const line = buf.getLine(lineNumber);
+    if (!line || !line.isWrapped) break;
+    lines.push(line);
+    lineNumber += 1;
+  }
+  return linesToLogicalText(lines)[0] ?? null;
+}
+
 /** 抽取纯文本但保留块边界，供需要逐块处理 Prompt 的复制策略使用。 */
 export function extractBlockTexts(
   term: Terminal,

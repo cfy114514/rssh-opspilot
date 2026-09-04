@@ -853,6 +853,7 @@ mod tests {
                 origin_suggestion_id: None,
                 exit_code: None,
                 exit_source: OpsPilotExitSource::Unavailable,
+                generation: 0,
                 occurred_at: 2,
             },
         )
