@@ -55,6 +55,7 @@
         suggestNextCommands,
         type NextCommandSuggestion,
     } from "../terminal/next-command.ts";
+    import {commandCompletionSuffix} from "../terminal/next-command-fill.ts";
     import type {OpsPilotFeedbackScope} from "../terminal/next-command-feedback.ts";
     import {createOpsPilotTerminalController} from "../terminal/opspilot-terminal-controller.ts";
     import {
@@ -681,8 +682,11 @@
         if (!terminal || disconnected || !sessionId || isAltBuffer) return;
         const current = [...readViewportText(terminal)].reverse().find((item) => item.trim().length > 0) ?? "";
         const prompt = parsePromptLine(current);
-        // Never replace text the user has already typed after the prompt.
-        if (!prompt || prompt.input.trim().length > 0) return;
+        // Only insert the missing suffix, and abort if the live line is no
+        // longer a prefix of this suggestion. Never replace user input.
+        if (!prompt) return;
+        const insertion = commandCompletionSuffix(prompt.input, suggestion.command);
+        if (insertion === null) return;
         const scope = nextCommandScope;
         if (scope) {
             opsPilotController.recordSuggestion({
@@ -697,7 +701,7 @@
         terminal.focus();
         // xterm.input enters the normal onData path but deliberately omits CR,
         // so accepting a suggestion cannot execute it without user approval.
-        terminal.input(suggestion.command);
+        terminal.input(insertion);
     }
 
     function currentOpsPilotScope(host: string | undefined, cwd: string | undefined): OpsPilotFeedbackScope | null {
@@ -827,9 +831,10 @@
             const visible = readViewportText(terminal);
             const line = [...visible].reverse().find((item) => item.trim().length > 0) ?? "";
             const prompt = parsePromptLine(line);
-            // Prompt detection is the boundary: no hidden command, no remote
-            // pwd probe, and no suggestion while the user is editing a line.
-            if (!prompt || prompt.input.trim().length > 0 || isAltBuffer || !sessionId) return;
+            // Prompt detection is the boundary: no hidden command and no
+            // remote pwd probe. A typed line is allowed only for local prefix
+            // filtering; acceptance still re-checks the live line.
+            if (!prompt || isAltBuffer || !sessionId) return;
 
             const blocks = blockTracker
                 ? [...blockTracker.blocks].slice(-4)
@@ -844,6 +849,7 @@
             const scope = currentOpsPilotScope(prompt.host, prompt.cwd);
             const context = {
                 promptLine: line,
+                input: prompt.input,
                 cwd: prompt.cwd,
                 host: prompt.host,
                 recentBlocks,

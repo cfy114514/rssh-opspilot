@@ -42,6 +42,14 @@ describe("suggestNextCommands", () => {
     expect(suggestions.some((item) => item.command.includes("ssh"))).toBe(false);
   });
 
+  it("filters candidates by the exact command prefix while the user is typing", () => {
+    const suggestions = suggestNextCommands({
+      recentBlocks: [],
+      input: "pw",
+    });
+    expect(suggestions.map((item) => item.command)).toEqual(["pwd"]);
+  });
+
   it("caps the list at three suggestions", () => {
     const suggestions = suggestNextCommands({
       cwd: "/var/log/spark",

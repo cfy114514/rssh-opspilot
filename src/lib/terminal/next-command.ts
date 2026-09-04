@@ -3,6 +3,8 @@ import {detectPrompt} from "./prompt.ts";
 /** Context already visible in the local terminal. No remote probe is needed. */
 export interface NextCommandContext {
   readonly promptLine?: string;
+  /** Current line input after the prompt, used only for local prefix filtering. */
+  readonly input?: string;
   readonly cwd?: string;
   readonly host?: string;
   readonly recentBlocks: readonly string[];
@@ -153,5 +155,9 @@ export function suggestNextCommands(context: NextCommandContext): NextCommandSug
     return {...item, confidence: Math.max(0, Math.min(1, item.confidence + adjustment))};
   });
   ranked.sort((a, b) => b.confidence - a.confidence);
-  return ranked.slice(0, 3);
+  const prefix = context.input?.trimStart() ?? "";
+  const visible = prefix
+    ? ranked.filter((item) => item.command.startsWith(prefix))
+    : ranked;
+  return visible.slice(0, 3);
 }

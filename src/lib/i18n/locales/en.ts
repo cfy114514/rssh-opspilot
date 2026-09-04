@@ -235,7 +235,7 @@ const en = {
   "terminal.block.menu.enable_auto_fold": "Enable auto-fold (this tab)",
   "terminal.next_command.title": "Next command",
   "terminal.next_command.local": "LOCAL",
-  "terminal.next_command.hint": "Read-only suggestions from the visible terminal context · Tab inserts the first",
+  "terminal.next_command.hint": "Read-only suggestions from the visible terminal context · Tab completes the first match",
   "terminal.next_command.dismiss": "Dismiss suggestions",
   "terminal.next_command.ask_ai": "Ask AI",
   "terminal.next_command.summarize": "Summarize",

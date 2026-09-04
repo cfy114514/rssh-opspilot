@@ -237,7 +237,7 @@ const zh: Messages = {
   "terminal.block.menu.enable_auto_fold": "开启自动折叠（当前标签）",
   "terminal.next_command.title": "下一步命令",
   "terminal.next_command.local": "本地",
-  "terminal.next_command.hint": "仅依据当前终端上下文生成只读建议 · Tab 插入第一条",
+  "terminal.next_command.hint": "仅依据当前终端上下文生成只读建议 · Tab 补全第一条匹配项",
   "terminal.next_command.dismiss": "关闭建议",
   "terminal.next_command.ask_ai": "询问 AI",
   "terminal.next_command.summarize": "总结任务",
