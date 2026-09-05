@@ -1459,7 +1459,7 @@ mod tests {
             "opspilot_events",
             "opspilot_memory_state",
         ] {
-            assert!(table_exists(&conn, table), "missing table {table}");
+            assert!(table_exists(&conn, table).unwrap(), "missing table {table}");
         }
         let provider_count: u32 = conn
             .query_row("SELECT COUNT(*) FROM ai_providers", [], |row| row.get(0))

@@ -101,8 +101,16 @@ rssh opspilot-memory clear --yes
   5,000 local events, and excluded from sync/export.
 - AI handoff reuses RSSH command-block redaction and fails closed if the policy
   cannot be loaded.
-- Session summaries are candidate Rules/Context JSON for human review; they do
-  not silently modify trusted knowledge or the remote host.
+- Session extraction uses the `rssh-offline-context` v1 JSON contract for human
+  review. “Extract with AI” only prefills the AI panel; “Copy extraction material”
+  works without an AI key. Both use redacted recent visible blocks, not full history.
+- In Settings → Shell → OpsPilot, select a JSON file or paste JSON, review commands,
+  hosts, triggers and replacements, acknowledge review, then confirm import.
+  Cancelling does not import anything. A `read-only` label is not proof of safety;
+  inspect commands before accepting them. Matching remains offline and insert-only.
+- Desktop/mobile use the shared UI; headless uses existing IPC adapters. JetBrains
+  users can paste JSON when its embedded browser cannot open a file picker.
+  This review UI adds no CLI commands or saved terminal-output history.
 - The current fork reuses RSSH's existing transport. Native `ssh.exe` +
   ConPTY integration that preserves every OpenSSH `ProxyJump`, Agent, and MFA
   behavior is planned as the next transport milestone.

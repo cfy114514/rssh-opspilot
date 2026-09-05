@@ -61,6 +61,7 @@
         shouldRefreshNextCommandSuggestions,
     } from "../terminal/next-command-fill.ts";
     import type {OpsPilotFeedbackScope} from "../terminal/next-command-feedback.ts";
+    import {buildOfflineContextSessionPrompt} from "../terminal/offline-context-prompt.ts";
     import {offlineContextStore} from "../terminal/offline-context-store.svelte.ts";
     import {createOpsPilotTerminalController} from "../terminal/opspilot-terminal-controller.ts";
     import {
@@ -754,10 +755,8 @@
     }
 
     async function readSafeNextCommandContext(): Promise<{
-        promptLine: string;
-        host?: string;
-        cwd?: string;
         blocks: string[];
+        extractionPrompt: string;
     } | null> {
         if (!terminal || disconnected || !sessionId || isAltBuffer) return null;
         const visible = readViewportText(terminal);
@@ -774,10 +773,10 @@
         try {
             const redaction = await app.loadCommandBlockRedaction(true);
             return {
-                promptLine,
-                host: prompt.host,
-                cwd: prompt.cwd,
                 blocks: redactCommandBlockTexts(rawBlocks, redaction),
+                extractionPrompt: buildOfflineContextSessionPrompt({
+                    host: prompt.host, cwd: prompt.cwd, shell: prompt.shell, blocks: rawBlocks,
+                }, redaction),
             };
         } catch (error) {
             toast.error(errMsg(error));
@@ -791,8 +790,6 @@
         if (!context) return;
         const prompt = [
             "Help me choose the next safe, read-only troubleshooting command.",
-            `Host: ${context.host ?? "unknown"}`,
-            `CWD: ${context.cwd ?? "unknown"}`,
             "Visible terminal context:",
             context.blocks.join("\n---\n"),
             "Do not execute anything automatically. Explain the best next step and wait for approval.",
@@ -802,23 +799,22 @@
         dismissNextCommandSuggestions();
     }
 
-    async function summarizeNextCommandSession() {
-        if (ai.settings()?.has_api_key !== true) return;
+    async function summarizeNextCommandSession(copy = false) {
+        if (!copy && ai.settings()?.has_api_key !== true) return;
         const context = await readSafeNextCommandContext();
         if (!context) return;
-        const prompt = [
-            "Summarize this troubleshooting session for local knowledge review.",
-            "Return JSON only with this shape: {\"rules\":[],\"context\":[],\"failed_patterns\":[]}",
-            "Rules must be reusable patterns; context must be host-specific facts.",
-            "Every item is a candidate only and must include evidence and confidence. Do not invent facts.",
-            `Host: ${context.host ?? "unknown"}`,
-            `CWD: ${context.cwd ?? "unknown"}`,
-            "Sanitized command blocks:",
-            context.blocks.join("\n---\n"),
-        ].join("\n");
-        ai.openPanel(tabId);
-        ai.prefillInput(tabId, prompt);
-        dismissNextCommandSuggestions();
+        try {
+            if (copy) {
+                await writeClipboard(context.extractionPrompt);
+                toast.success(t("terminal.next_command.material_copied"));
+            } else {
+                ai.openPanel(tabId);
+                ai.prefillInput(tabId, context.extractionPrompt);
+            }
+            dismissNextCommandSuggestions();
+        } catch (error) {
+            toast.error(errMsg(error));
+        }
     }
 
     async function captureOpsPilotObservation(returnedPromptLine: string): Promise<void> {
@@ -2353,6 +2349,7 @@
             onDismiss={dismissNextCommandSuggestionsByUser}
             onAskAi={() => { void askAiAboutNextCommand(); }}
             onSummarize={() => { void summarizeNextCommandSession(); }}
+            onCopyContext={() => { void summarizeNextCommandSession(true); }}
         />
         {#if app.commandBlockBar()}
             <!-- 染色层：整行宽的半透明色块，用块自身的色条颜色。pointer-events:none

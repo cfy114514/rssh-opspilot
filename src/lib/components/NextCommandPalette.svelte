@@ -10,6 +10,7 @@
         onDismiss,
         onAskAi,
         onSummarize,
+        onCopyContext,
     }: {
         suggestions: readonly NextCommandSuggestion[];
         mobile?: boolean;
@@ -18,6 +19,7 @@
         onDismiss: () => void;
         onAskAi: () => void;
         onSummarize: () => void;
+        onCopyContext: () => void;
     } = $props();
 </script>
 
@@ -43,6 +45,12 @@
                     onclick={onSummarize}
                     title={canAskAi ? t("terminal.next_command.summarize") : t("terminal.next_command.ai_disabled")}
                 >{t("terminal.next_command.summarize")}</button>
+                <button
+                    class="next-command-summary"
+                    type="button"
+                    onclick={onCopyContext}
+                    title={t("terminal.next_command.copy_context_hint")}
+                >{t("terminal.next_command.copy_context")}</button>
                 <button class="next-command-dismiss" type="button" onclick={onDismiss} aria-label={t("terminal.next_command.dismiss")}>×</button>
             </div>
         </div>
@@ -82,6 +90,7 @@
     }
 
     .next-command-head {
+        flex-wrap: wrap;
         display: flex;
         align-items: center;
         justify-content: space-between;
@@ -119,6 +128,7 @@
     }
 
     .next-command-actions {
+        flex-wrap: wrap;
         display: flex;
         align-items: center;
         gap: 4px;

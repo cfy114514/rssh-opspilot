@@ -74,7 +74,9 @@ rssh opspilot-memory clear --yes
 - 接受建议只会插入文本供审核，不追加回车，也不提交命令；
 - OpsPilot 命令历史默认关闭，脱敏失败时拒绝记录，本地事件上限为 5,000，且不参与同步或导出；
 - AI 读取失败或脱敏策略无法加载时，默认不发送上下文；
-- 总结结果只是待审核的 Rules/Context candidate，不会静默修改可信知识或远端主机；
+- 会话提炼统一使用 `rssh-offline-context` v1 JSON；“AI 提炼”只预填、不发送，“复制提炼材料”无需配置 AI Key。材料仅包含脱敏后的近期可见命令块，不是完整历史；
+- 在设置 → Shell → OpsPilot 中选择 JSON 文件或粘贴 JSON，预览命令、主机、触发条件及覆盖条目，勾选已审核后确认导入；取消不会入库。`read-only` 只是声明，不是命令安全证明，接受补全前仍需检查；
+- 桌面和移动端复用同一界面，Headless 复用已有 IPC；JetBrains 文件选择受限时可粘贴 JSON。本次不新增 CLI 命令，也不保存终端输出历史；
 - 当前 fork 复用 RSSH 既有传输层；保留完整 OpenSSH `ProxyJump`、Agent、MFA
   行为的原生 `ssh.exe + ConPTY` 传输是下一阶段工作。
 
