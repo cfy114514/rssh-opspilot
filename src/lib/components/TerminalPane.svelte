@@ -55,7 +55,10 @@
         suggestNextCommands,
         type NextCommandSuggestion,
     } from "../terminal/next-command.ts";
-    import {commandCompletionSuffix} from "../terminal/next-command-fill.ts";
+    import {
+        commandCompletionSuffix,
+        shouldRefreshNextCommandSuggestions,
+    } from "../terminal/next-command-fill.ts";
     import type {OpsPilotFeedbackScope} from "../terminal/next-command-feedback.ts";
     import {createOpsPilotTerminalController} from "../terminal/opspilot-terminal-controller.ts";
     import {
@@ -234,6 +237,7 @@
     let nextCommandParsedDisposable: IDisposable | undefined;
     let nextCommandScope: OpsPilotFeedbackScope | null = null;
     let nextCommandContextRevision = 0;
+    let suppressNextCommandInputRefresh = false;
     let opsPilotTarget: OpsPilotTargetRef | null = null;
     let opsPilotBlockFloor = 0;
     const observedOpsPilotBlockIds = new Set<number>();
@@ -705,7 +709,12 @@
         terminal.focus();
         // xterm.input enters the normal onData path but deliberately omits CR,
         // so accepting a suggestion cannot execute it without user approval.
-        terminal.input(insertion);
+        suppressNextCommandInputRefresh = true;
+        try {
+            terminal.input(insertion);
+        } finally {
+            suppressNextCommandInputRefresh = false;
+        }
     }
 
     function acceptNextCommandFromMobile(): boolean {
@@ -1331,7 +1340,10 @@
 
         dataDisposable = terminal.onData((data: string) => {
             if (destroyed || disconnected || sessionId !== sid) return;
+            const refreshNextCommandInput = !suppressNextCommandInputRefresh
+                && shouldRefreshNextCommandSuggestions(data);
             clearNextCommandSuggestions();
+            if (refreshNextCommandInput) scheduleNextCommandSuggestions();
             if (streamOpts) {
                 maybeReleaseBacklog(data);
                 streamOnData(data);
