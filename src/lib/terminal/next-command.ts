@@ -190,6 +190,11 @@ export function suggestNextCommands(context: NextCommandContext): NextCommandSug
     addSuggestion(suggestions, "kubectl get namespaces", "查看可用的 Kubernetes 命名空间", 0.75);
   }
 
+  if (suggestions.length < 3 && /\bdocker(?:\s|$)|docker[_ -]?exec/.test(haystack)) {
+    addSuggestion(suggestions, "docker ps", "查看当前运行中的容器", 0.82);
+    addSuggestion(suggestions, "docker images", "查看本机已有的容器镜像", 0.75);
+  }
+
   if (suggestions.length === 0) {
     if (shell === "powershell") {
       addSuggestion(suggestions, "Get-Location", "确认当前工作目录", context.cwd ? 0.72 : 0.62);

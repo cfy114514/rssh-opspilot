@@ -121,6 +121,17 @@ describe("suggestNextCommands", () => {
     expect(suggestions.map((item) => item.command)).toEqual(["kubectl get pods"]);
   });
 
+  it("suggests read-only Docker inventory commands", () => {
+    const suggestions = suggestNextCommands({
+      recentBlocks: ["docker container api is restarting"],
+    });
+    expect(suggestions.map((item) => item.command)).toEqual([
+      "docker ps",
+      "docker images",
+    ]);
+    expect(suggestions.every((item) => item.risk === "read-only")).toBe(true);
+  });
+
   it("filters candidates by the exact command prefix while the user is typing", () => {
     const suggestions = suggestNextCommands({
       recentBlocks: [],
