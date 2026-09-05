@@ -140,6 +140,18 @@ describe("suggestNextCommands", () => {
     expect(suggestions.map((item) => item.command)).toEqual(["docker ps"]);
   });
 
+  it("suggests read-only systemd service checks", () => {
+    const suggestions = suggestNextCommands({
+      cwd: "/etc/systemd/system",
+      recentBlocks: ["systemctl list-units --type=service"],
+    });
+    expect(suggestions.map((item) => item.command)).toEqual([
+      "systemctl --failed --no-legend",
+      "systemctl list-units --type=service --state=running --no-legend",
+    ]);
+    expect(suggestions.every((item) => item.risk === "read-only")).toBe(true);
+  });
+
   it("filters candidates by the exact command prefix while the user is typing", () => {
     const suggestions = suggestNextCommands({
       recentBlocks: [],

@@ -125,6 +125,12 @@ const PREFIX_COMPLETIONS = [
   {command: "kubectl get namespaces", reason: "查看可用的 Kubernetes 命名空间", confidence: 0.60},
   {command: "docker ps", reason: "查看当前运行中的容器", confidence: 0.64},
   {command: "docker images", reason: "查看本机已有的容器镜像", confidence: 0.60},
+  {command: "systemctl --failed --no-legend", reason: "查看失败的 systemd 服务", confidence: 0.64},
+  {
+    command: "systemctl list-units --type=service --state=running --no-legend",
+    reason: "查看正在运行的 systemd 服务",
+    confidence: 0.60,
+  },
 ] as const;
 
 function logCandidate(context: NextCommandContext, text: string): string {
@@ -205,6 +211,16 @@ export function suggestNextCommands(context: NextCommandContext): NextCommandSug
   if (suggestions.length < 3 && /\bdocker(?:\s|$)|docker[_ -]?exec/.test(haystack)) {
     addSuggestion(suggestions, "docker ps", "查看当前运行中的容器", 0.82);
     addSuggestion(suggestions, "docker images", "查看本机已有的容器镜像", 0.75);
+  }
+
+  if (suggestions.length < 3 && /\bsystemctl(?:\s|$)|\bsystemd\b/.test(haystack)) {
+    addSuggestion(suggestions, "systemctl --failed --no-legend", "查看失败的 systemd 服务", 0.82);
+    addSuggestion(
+      suggestions,
+      "systemctl list-units --type=service --state=running --no-legend",
+      "查看正在运行的 systemd 服务",
+      0.75,
+    );
   }
 
   // Once the user has typed an explicit command prefix, supplement contextual
