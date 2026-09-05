@@ -102,6 +102,25 @@ describe("suggestNextCommands", () => {
     expect(suggestions.map((item) => item.command)).toEqual(["git status --short"]);
   });
 
+  it("suggests read-only Kubernetes orientation commands", () => {
+    const suggestions = suggestNextCommands({
+      recentBlocks: ["kubectl describe pod api-7d9c -n production"],
+    });
+    expect(suggestions.map((item) => item.command)).toEqual([
+      "kubectl get pods",
+      "kubectl get namespaces",
+    ]);
+    expect(suggestions.every((item) => item.risk === "read-only")).toBe(true);
+  });
+
+  it("filters Kubernetes suggestions by a typed command prefix", () => {
+    const suggestions = suggestNextCommands({
+      recentBlocks: ["kubernetes deployment is pending"],
+      input: "kubectl get p",
+    });
+    expect(suggestions.map((item) => item.command)).toEqual(["kubectl get pods"]);
+  });
+
   it("filters candidates by the exact command prefix while the user is typing", () => {
     const suggestions = suggestNextCommands({
       recentBlocks: [],

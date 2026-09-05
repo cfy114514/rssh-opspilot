@@ -185,6 +185,11 @@ export function suggestNextCommands(context: NextCommandContext): NextCommandSug
     addSuggestion(suggestions, "git diff --stat", "快速查看改动规模", 0.75);
   }
 
+  if (suggestions.length < 3 && /\bkubectl(?:\s|$)|\bkubernetes\b|\bk8s\b/.test(haystack)) {
+    addSuggestion(suggestions, "kubectl get pods", "查看当前命名空间中的 Pod 状态", 0.82);
+    addSuggestion(suggestions, "kubectl get namespaces", "查看可用的 Kubernetes 命名空间", 0.75);
+  }
+
   if (suggestions.length === 0) {
     if (shell === "powershell") {
       addSuggestion(suggestions, "Get-Location", "确认当前工作目录", context.cwd ? 0.72 : 0.62);
