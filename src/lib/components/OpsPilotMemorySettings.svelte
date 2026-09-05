@@ -110,6 +110,16 @@
     contextError = "";
   }
 
+  async function previewOfflineContext(raw: string): Promise<void> {
+    const redaction = await app.loadCommandBlockRedaction(true);
+    contextPreview = offlineContextStore.previewJson(raw, {
+      redactCommand: (command) => redactCommandText(command, redaction),
+    });
+    contextRedactionSnapshot = JSON.stringify(redaction);
+    contextJson = "";
+    contextPasteOpen = false;
+  }
+
   async function importOfflineContext(fromFile = true): Promise<void> {
     if (contextImporting) return;
     contextImporting = true;
@@ -123,13 +133,7 @@
         maxBytes: OFFLINE_CONTEXT_MAX_PAYLOAD_BYTES,
       }) : { text: contextJson };
       if (!file) return;
-      const redaction = await app.loadCommandBlockRedaction(true);
-      contextPreview = offlineContextStore.previewJson(file.text, {
-        redactCommand: (command) => redactCommandText(command, redaction),
-      });
-      contextRedactionSnapshot = JSON.stringify(redaction);
-      contextJson = "";
-      contextPasteOpen = false;
+      await previewOfflineContext(file.text);
     } catch (cause) {
       contextError = t("settings.shell.opspilot_context.error_import", {
         error: contextErrorMessage(cause),
@@ -138,6 +142,35 @@
       contextImporting = false;
     }
   }
+
+  async function reviewPendingOfflineContext(raw: string): Promise<void> {
+    if (contextImporting) return;
+    contextImporting = true;
+    contextError = "";
+    contextMessage = "";
+    contextPreview = null;
+    contextReviewed = false;
+    try {
+      await previewOfflineContext(raw);
+    } catch (cause) {
+      contextError = t("settings.shell.opspilot_context.error_import", {
+        error: contextErrorMessage(cause),
+      });
+    } finally {
+      contextImporting = false;
+    }
+  }
+
+  // Keep the handoff reactive when this settings route stays mounted. Consume
+  // exactly once before awaiting preview work; a newer payload waits in the
+  // store and is picked up when contextImporting returns to false.
+  $effect(() => {
+    const pending = offlineContextStore.pendingReview();
+    const importing = contextImporting;
+    if (!pending || importing) return;
+    const raw = offlineContextStore.takePendingReview();
+    if (raw) void reviewPendingOfflineContext(raw);
+  });
 
   async function confirmContextImport(): Promise<void> {
     if (!contextPreview || !contextReviewed || contextImporting) return;

@@ -33,8 +33,12 @@ export interface CategoryGroup {
   commands: string[];
 }
 
-/** 三种协议类型 —— 与后端 db::ai_provider::PROTOCOLS 一一对应。 */
-export type LlmProtocol = "deepseek-thinking" | "openai-completions" | "anthropic-messages";
+/** 协议类型 —— 与后端 db::ai_provider::PROTOCOLS 一一对应。 */
+export type LlmProtocol =
+  | "deepseek-thinking"
+  | "openai-completions"
+  | "anthropic-messages"
+  | "codex-subscription";
 
 /** 一条用户自定义 provider（ai_providers 表一行）。 */
 export interface AiProviderRecord {
@@ -44,6 +48,8 @@ export interface AiProviderRecord {
   model: string;
   endpoint: string;
   has_api_key: boolean;
+  reasoning_effort?: string | null;
+  ready: boolean;
 }
 
 export interface AiSettings {
@@ -54,6 +60,8 @@ export interface AiSettings {
   model: string;
   endpoint: string | null;
   has_api_key: boolean;
+  reasoning_effort?: string | null;
+  ready: boolean;
   /** 危险模式总闸。off 时下面 8 个 auto_* 视同 false（持久化保留，方便切回时复原）。 */
   danger_mode: boolean;
   /** per-tool 自动批准。仅当 danger_mode=true 时生效；UI 上 danger 关时整组禁用。 */
@@ -178,6 +186,35 @@ export interface MatchProposal {
 export interface ModelInfo {
   id: string;
   display_name: string | null;
+  supported_reasoning_efforts: string[];
+  default_reasoning_effort: string | null;
+}
+
+export interface AiCodexStatus {
+  available: boolean;
+  authenticated: boolean;
+  loginFailed?: boolean;
+  executable: string;
+  version: string | null;
+}
+
+export interface AiCodexLogin {
+  loginId: string;
+  authUrl: string;
+  userCode?: string;
+}
+
+export const CODEX_REASONING_EFFORT_ORDER = [
+  "none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra",
+] as const;
+
+export function codexDefaultModel(models: readonly ModelInfo[]): string {
+  return models.some((model) => model.id === "gpt-5.6-luna") ? "gpt-5.6-luna" : "";
+}
+
+export function codexDefaultReasoningEffort(model: ModelInfo | undefined): string | null {
+  const supported = model?.supported_reasoning_efforts ?? [];
+  return CODEX_REASONING_EFFORT_ORDER.find((effort) => supported.includes(effort)) ?? null;
 }
 
 export interface AiSessionInfo {

@@ -174,6 +174,45 @@ describe("offline context import review", () => {
   });
 });
 
+describe("offline context pending review handoff", () => {
+  it("keeps a bounded review payload in memory without persisting it", () => {
+    const storage = new MemoryStorage();
+    const store = createOfflineContextStore(storage);
+    const raw = json();
+
+    expect(store.setPendingReview(raw)).toBe(true);
+    expect(store.pendingReview()).toBe(raw);
+    expect(storage.getItem("rssh.offline-context.v1")).toBeNull();
+    expect(store.takePendingReview()).toBe(raw);
+    expect(store.pendingReview()).toBeNull();
+  });
+
+  it("rejects an oversized pending review without touching storage", () => {
+    const storage = new MemoryStorage();
+    const store = createOfflineContextStore(storage);
+    expect(store.setPendingReview("x".repeat(512 * 1024 + 1))).toBe(false);
+    expect(store.pendingReview()).toBeNull();
+    expect(storage.getItem("rssh.offline-context.v1")).toBeNull();
+  });
+
+  it("does not hand off invalid JSON", () => {
+    const store = createOfflineContextStore(new MemoryStorage());
+    expect(store.setPendingReview("not json")).toBe(false);
+    expect(store.pendingReview()).toBeNull();
+  });
+
+  it("keeps the newest pending review queued until the consumer takes it", () => {
+    const store = createOfflineContextStore(new MemoryStorage());
+    const first = json();
+    const second = json([{ ...entry, id: "second" }]);
+
+    expect(store.setPendingReview(first)).toBe(true);
+    expect(store.setPendingReview(second)).toBe(true);
+    expect(store.takePendingReview()).toBe(second);
+    expect(store.takePendingReview()).toBeNull();
+  });
+});
+
 
 it("does not invalidate another preview of an unchanged empty library", () => {
   const store = createOfflineContextStore(new MemoryStorage());

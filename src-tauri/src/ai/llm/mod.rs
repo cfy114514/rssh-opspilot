@@ -16,6 +16,7 @@
 //! 用户配置的显式值（必填），没有编译期默认端点。
 
 pub mod anthropic;
+pub mod codex;
 pub mod deepseek;
 mod protocol;
 
@@ -26,6 +27,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::AppResult;
 
+pub use codex::CodexSubscriptionClient;
 pub use protocol::OpenAiCompletionsClient;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -80,6 +82,7 @@ pub struct ChatRequest {
     pub tools: Vec<ToolSchema>,
     pub model: String,
     pub max_tokens: u32,
+    pub output_schema: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -97,6 +100,10 @@ pub struct ChatResponse {
 pub struct ModelInfo {
     pub id: String,
     pub display_name: Option<String>,
+    #[serde(default)]
+    pub supported_reasoning_efforts: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_reasoning_effort: Option<String>,
 }
 
 /// 流式增量回调。Text 用于 UI 实时渲染；其余仅供调试 / 暂不消费。
@@ -119,6 +126,10 @@ pub type DeltaSink = Arc<dyn Fn(ChatDelta) + Send + Sync>;
 pub trait LlmClient: Send + Sync {
     async fn chat(&self, req: ChatRequest, sink: DeltaSink) -> AppResult<ChatResponse>;
     async fn list_models(&self) -> AppResult<Vec<ModelInfo>>;
+
+    fn supports_tools(&self) -> bool {
+        true
+    }
 }
 
 /// The closed set of protocols a provider row may declare. `parse` is the
@@ -130,6 +141,7 @@ pub enum Protocol {
     DeepSeekThinking,
     OpenAiCompletions,
     AnthropicMessages,
+    CodexSubscription,
 }
 
 impl Protocol {
@@ -138,6 +150,7 @@ impl Protocol {
             "deepseek-thinking" => Some(Protocol::DeepSeekThinking),
             "openai-completions" => Some(Protocol::OpenAiCompletions),
             "anthropic-messages" => Some(Protocol::AnthropicMessages),
+            "codex-subscription" => Some(Protocol::CodexSubscription),
             _ => None,
         }
     }
@@ -165,6 +178,10 @@ pub fn build_client(
         Some(Protocol::AnthropicMessages) => {
             Ok(Box::new(anthropic::AnthropicClient::new(api_key, endpoint)))
         }
+        Some(Protocol::CodexSubscription) => Err(crate::error::AppError::config(
+            "codex_runtime_required",
+            serde_json::json!({}),
+        )),
         None => Err(crate::error::AppError::config(
             "llm_unknown_protocol",
             serde_json::json!({ "protocol": protocol }),
@@ -301,5 +318,79 @@ mod sse_tests {
         let mut p = SseParser::new();
         let events = p.feed(b"data: a\n\ndata: b\n\n");
         assert_eq!(events, vec!["a".to_string(), "b".to_string()]);
+    }
+}
+
+#[cfg(test)]
+mod contract_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn parses_codex_subscription_protocol() {
+        assert_eq!(
+            Protocol::parse("codex-subscription"),
+            Some(Protocol::CodexSubscription)
+        );
+        assert!(protocol_valid("codex-subscription"));
+    }
+
+    #[test]
+    fn model_info_defaults_reasoning_metadata_for_old_payloads() {
+        let model: ModelInfo = serde_json::from_value(json!({
+            "id": "legacy-model",
+            "display_name": null
+        }))
+        .unwrap();
+
+        assert!(model.supported_reasoning_efforts.is_empty());
+        assert_eq!(model.default_reasoning_effort, None);
+    }
+
+    #[test]
+    fn model_info_round_trips_reasoning_metadata() {
+        let model: ModelInfo = serde_json::from_value(json!({
+            "id": "gpt-5.6-luna",
+            "display_name": "Luna",
+            "supported_reasoning_efforts": ["none", "low"],
+            "default_reasoning_effort": "low"
+        }))
+        .unwrap();
+
+        assert_eq!(model.supported_reasoning_efforts, ["none", "low"]);
+        assert_eq!(model.default_reasoning_effort.as_deref(), Some("low"));
+        let wire = serde_json::to_value(model).unwrap();
+        assert_eq!(wire["supported_reasoning_efforts"], json!(["none", "low"]));
+        assert_eq!(wire["default_reasoning_effort"], "low");
+    }
+
+    #[test]
+    fn chat_request_carries_optional_output_schema() {
+        let schema = json!({ "type": "object" });
+        let request = ChatRequest {
+            system_prompt: "text only".into(),
+            messages: Vec::new(),
+            tools: Vec::new(),
+            model: "gpt-5.6-luna".into(),
+            max_tokens: 64,
+            output_schema: Some(schema.clone()),
+        };
+
+        assert_eq!(request.output_schema, Some(schema));
+    }
+
+    #[test]
+    fn llm_clients_support_tools_by_default() {
+        let client = OpenAiCompletionsClient::new("key".into(), "https://example.test/v1".into());
+        assert!(client.supports_tools());
+    }
+
+    #[test]
+    fn codex_factory_requires_runtime_instead_of_building_an_http_client() {
+        let error = match build_client("codex-subscription", String::new(), String::new()) {
+            Ok(_) => panic!("codex must not be built by the HTTP factory"),
+            Err(error) => error,
+        };
+        assert_eq!(error.code(), "codex_runtime_required");
     }
 }

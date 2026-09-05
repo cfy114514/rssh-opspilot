@@ -1,5 +1,6 @@
 import {
   OFFLINE_CONTEXT_FORMAT,
+  OFFLINE_CONTEXT_MAX_PAYLOAD_BYTES,
   OFFLINE_CONTEXT_VERSION,
   parseOfflineContextJson,
   type OfflineContextEntry,
@@ -50,6 +51,9 @@ export interface OfflineContextStore {
   importJson(raw: string, options?: OfflineContextParseOptions): OfflineContextImportResult;
   previewJson(raw: string, options?: OfflineContextParseOptions): OfflineContextImportPreview;
   confirmImport(preview: OfflineContextImportPreview): OfflineContextImportResult;
+  pendingReview(): string | null;
+  setPendingReview(raw: string): boolean;
+  takePendingReview(): string | null;
   clear(): void;
   reload(): void;
 }
@@ -81,6 +85,7 @@ export function createOfflineContextStore(
   let current = $state<OfflineContextEntry[]>([]);
   let currentRevision = $state(0);
   let lastStored: string | null = null;
+  let pendingReviewRaw = $state<string | null>(null);
   // Review tokens belong to this store; UI edits cannot change the approved payload.
   const reviews = new WeakMap<OfflineContextImportPreview, {
     revision: number;
@@ -177,9 +182,34 @@ export function createOfflineContextStore(
       return preview.result;
     },
 
+    pendingReview() {
+      return pendingReviewRaw;
+    },
+
+    setPendingReview(raw) {
+      if (typeof raw !== "string"
+        || new TextEncoder().encode(raw).byteLength > OFFLINE_CONTEXT_MAX_PAYLOAD_BYTES) {
+        return false;
+      }
+      try {
+        parseOfflineContextJson(raw);
+      } catch {
+        return false;
+      }
+      pendingReviewRaw = raw;
+      return true;
+    },
+
+    takePendingReview() {
+      const raw = pendingReviewRaw;
+      pendingReviewRaw = null;
+      return raw;
+    },
+
     clear() {
       if (storage) storage.removeItem(OFFLINE_CONTEXT_STORAGE_KEY);
       lastStored = null;
+      pendingReviewRaw = null;
       current = [];
       currentRevision++;
     },

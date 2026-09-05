@@ -364,7 +364,12 @@ pub async fn list_models(
                 .get("display_name")
                 .and_then(|s| s.as_str())
                 .map(|s| s.to_string());
-            Some(ModelInfo { id, display_name })
+            Some(ModelInfo {
+                id,
+                display_name,
+                supported_reasoning_efforts: Vec::new(),
+                default_reasoning_effort: None,
+            })
         })
         .collect();
     models.sort_by(|a, b| a.id.cmp(&b.id));

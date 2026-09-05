@@ -953,6 +953,7 @@ mod tests {
         let db = std::sync::Arc::new(crate::db::Db::open_in_memory().unwrap());
         let secret_store: std::sync::Arc<dyn crate::secret::SecretStore> =
             std::sync::Arc::new(crate::secret::DbStore::new(db.clone()));
+        let data_dir = tempfile::tempdir().unwrap().keep();
         AppState {
             db,
             secret_store,
@@ -971,9 +972,12 @@ mod tests {
             host_key_waiters: Default::default(),
             passphrase_cache: Default::default(),
             ai_sessions: Default::default(),
+            codex_subscription: std::sync::Arc::new(
+                crate::ai::codex_subscription::CodexSubscription::new(data_dir.clone()),
+            ),
             ai_session_owners: Default::default(),
             ai_remote_shell_cache: Default::default(),
-            data_dir: tempfile::tempdir().unwrap().keep(),
+            data_dir,
         }
     }
 }

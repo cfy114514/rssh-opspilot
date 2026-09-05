@@ -115,6 +115,44 @@ rssh opspilot-memory clear --yes
   ConPTY integration that preserves every OpenSSH `ProxyJump`, Agent, and MFA
   behavior is planned as the next transport milestone.
 
+### ChatGPT / Codex subscription provider
+
+The optional `Codex Subscription` provider uses the official local `codex app-server`
+with ChatGPT-managed login, not a proxy or an OpenAI API key. Install the validated
+**Codex CLI 0.153.2** separately; RSSH does not download or update it automatically.
+Other versions fail closed until the no-tools wire check has been repeated.
+
+1. In Settings → AI Provider, choose **Codex Subscription**.
+2. Leave the executable field blank for auto-detection, or configure an absolute path.
+3. Click **Log in**, copy the official device code, and complete the device-code login in your browser.
+4. Refresh the model list. Luna is preselected only when the account's catalog contains
+   it; reasoning defaults to `none` only if supported. Missing models/efforts require
+   an explicit new selection, never an automatic switch to a larger model.
+5. Save and select the provider, then start a new AI conversation (existing conversations
+   retain their provider). AI requests still require an explicit Send action.
+   Extraction responses can be sent to the existing offline-context review before import.
+
+This provider is text-only: it does not receive RSSH command tools, run shell probes,
+load personal Codex skills/MCP/hooks, or execute suggested commands. Each generation
+uses an ephemeral Codex thread. The existing RSSH chat history behavior is unchanged;
+ephemeral does not promise zero server-side retention. Codex keeps login credentials in process memory only (sign in again after runtime restart),
+using an RSSH-specific home (`<RSSH data dir>/codex-subscription`); RSSH never
+copies your existing Codex login files. The executable choice and reasoning preferences
+are local-only. Switching an existing HTTP provider to Codex preserves its inactive
+encrypted API key without using or exporting it; deleting the provider clears it. No public proxy listener is started. One generation runs at a time;
+RSSH does not replay failed turns or fall back to API billing. Codex's own bounded
+transport retry behavior remains part of its official runtime.
+
+Desktop is the primary target. Headless/JetBrains reuse the same backend in trusted
+single-user deployments. Mobile cannot run this local provider; existing HTTP providers
+remain available. No new CLI login/chat commands are added.
+
+Offline acceptance check (no account or real inference):
+
+```powershell
+python scripts/check-codex-subscription.py --codex "C:\absolute\path\to\codex.exe"
+```
+
 ### Development quick start
 
 ```powershell

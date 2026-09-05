@@ -13,9 +13,12 @@
     import { renderMarkdown } from "./markdown.ts";
     import { formatTokenCount } from "./tokens.ts";
     import { t, errMsg } from "../i18n/index.svelte.ts";
+    import * as app from "../stores/app.svelte.ts";
     import { toast } from "../stores/toast.svelte.ts";
     import { writeText as writeClipboard } from "../clipboard.ts";
     import { setupSoftKeyboardInset } from "../soft-keyboard-inset.ts";
+    import { parseOfflineContextJson } from "../terminal/offline-context-schema.ts";
+    import { offlineContextStore } from "../terminal/offline-context-store.svelte.ts";
     import { onMount, onDestroy, untrack } from "svelte";
 
     // tabId 是 AI 会话身份（切 tab / 重连不丢；显式关闭面板时结束）。
@@ -40,6 +43,7 @@
     });
 
     let inputText = $state("");
+    let inputOfflineContext = $state(false);
     let auditOpen = $state(false);
     let busy = $state(false);
     let banner = $state<string | null>(null);
@@ -53,6 +57,8 @@
         userMessageIndex: number;
         text: string;
     } | null>(null);
+    let extractionAfterItemIndex = $state<number | null>(null);
+    let offlinePreviewCandidate = $state<string | null>(null);
 
     let session = $derived(ai.sessionForTab(tabId));
     let items: ChatItem[] = $derived(ai.chatItems(tabId));
@@ -68,6 +74,8 @@
     // fall back to the configured model (what will run) when there's no session yet.
     // Empty string when neither is known — the .model span still works as the spring.
     let currentModel = $derived(session?.model ?? ai.settings()?.model ?? "");
+    let ready = $derived(ai.isReady(ai.settings()));
+    let codexSubscription = $derived(ai.settings()?.protocol === "codex-subscription");
 
     // 该 profile 下持久化的历史对话 —— 仅会话未启动时展示（picker）。
     // null = 还没加载完，与空数组（确无历史）区分，避免列表闪现。
@@ -89,9 +97,32 @@
         const p = ai.pendingPrefill(tabId);
         if (!p) return;
         inputText = p.text;
+        inputOfflineContext = p.offlineContext === true;
         auditOpen = false;
         ai.clearPrefill(tabId);
         if (active) inputEl?.focus();
+    });
+
+    // An extraction response is eligible for the existing settings-page review
+    // only when the user explicitly sent an extraction prefill. Parsing is
+    // strict: fenced/prose responses stay on the normal copy/paste path.
+    $effect(() => {
+        const after = extractionAfterItemIndex;
+        const current = items;
+        if (after === null) return;
+        const assistant = current
+            .slice(after + 1)
+            .reverse()
+            .find((item) => item.kind === "assistant" && !item.streaming && !item.cancelled);
+        if (!assistant || assistant.kind !== "assistant") return;
+        extractionAfterItemIndex = null;
+        try {
+            parseOfflineContextJson(assistant.text);
+            offlinePreviewCandidate = assistant.text;
+            banner = t("ai.offline.preview_ready");
+        } catch {
+            // The user can still copy/paste an answer that needs correction.
+        }
     });
 
     // 固定挂载的隐藏面板不能保留全局 modal：否则 A 隐藏后仍会拦截 B 的 Esc。
@@ -178,8 +209,10 @@
             if (!settings.provider) {
                 throw new Error(t("ai.error.no_provider"));
             }
-            if (!settings.has_api_key) {
-                throw new Error(t("ai.error.no_api_key"));
+            if (!ai.isReady(settings)) {
+                throw new Error(settings.protocol === "codex-subscription"
+                    ? t("ai.error.codex_not_ready")
+                    : t("ai.error.no_api_key"));
             }
             // targetId 是连接句柄：同一 tab 重连后应使用此刻的最新值，不能在点击时
             // 冻结旧句柄；tabId / targetKind 才是这次动作不可变的 owner。
@@ -216,8 +249,10 @@
             if (!settings.provider) {
                 throw new Error(t("ai.error.no_provider"));
             }
-            if (!settings.has_api_key) {
-                throw new Error(t("ai.error.no_api_key"));
+            if (!ai.isReady(settings)) {
+                throw new Error(settings.protocol === "codex-subscription"
+                    ? t("ai.error.codex_not_ready")
+                    : t("ai.error.no_api_key"));
             }
             const startedTargetId = liveTargetId();
             await ai.resumeSession({
@@ -260,11 +295,16 @@
         const text = inputText.trim();
         if (!text || busy) return;
         banner = null;
+        offlinePreviewCandidate = null;
         busy = true;
+        const offlineContext = inputOfflineContext;
+        const responseAfterItemIndex = items.length;
         try {
             await ensureSession(owner);
+            await ai.sendMessage(owner.tabId, text, owner.lease, offlineContext);
             inputText = "";
-            await ai.sendMessage(owner.tabId, text, owner.lease);
+            inputOfflineContext = false;
+            if (offlineContext) extractionAfterItemIndex = responseAfterItemIndex;
         } catch (e: any) {
             console.error("[ai] send failed:", e);
             banner = errMsg(e);
@@ -275,6 +315,8 @@
 
     /** 显式关面板 = 结束并归档当前会话；重开回到首次打开状态。 */
     function closePanel() {
+        extractionAfterItemIndex = null;
+        offlinePreviewCandidate = null;
         void ai.closePanel(tabId).catch((e) => {
             console.warn("[ai] close panel session:", e);
             toast.error(errMsg(e));
@@ -286,10 +328,37 @@
     function newSession() {
         auditOpen = false;
         banner = null;
+        extractionAfterItemIndex = null;
+        offlinePreviewCandidate = null;
+        inputOfflineContext = false;
         void ai.endConversation(tabId).catch((e) => {
             console.warn("[ai] end conversation:", e);
             toast.error(errMsg(e));
         });
+    }
+
+    function dismissBanner() {
+        banner = null;
+        offlinePreviewCandidate = null;
+    }
+
+    function openOfflinePreview() {
+        const raw = offlinePreviewCandidate;
+        if (!raw) return;
+        if (!offlineContextStore.setPendingReview(raw)) {
+            banner = t("ai.offline.preview_too_large");
+            offlinePreviewCandidate = null;
+            return;
+        }
+        offlinePreviewCandidate = null;
+        banner = null;
+        app.openSettings();
+        app.settingsNavigate("shell-settings");
+    }
+
+    function isToolItem(item: ChatItem): boolean {
+        return item.kind === "command" || item.kind === "web_tool" || item.kind === "download"
+            || item.kind === "analyze" || item.kind === "patch" || item.kind === "match";
     }
 
     /** 打断当前流式响应；会话上下文保留，用户可立刻发下一条纠正。 */
@@ -402,20 +471,22 @@
              logic + confirm modal live in DangerModeToggle (shared with AiSettings —
              one safety contract); here we only render the icon. No disabled={!session}
              — danger_mode is a global setting, settable before the session starts. -->
-        <DangerModeToggle {active} onError={(m) => (banner = m)}>
-            {#snippet trigger(requestToggle, saving)}
-                <button class="btn-icon danger-toggle" class:on={dangerMode}
-                        onclick={requestToggle} disabled={saving}
-                        title={dangerMode ? t("ai.title.danger_tip") : t("ai.toolbar.danger_enable")}
-                        aria-label={t("ai.toolbar.danger_aria")} aria-pressed={dangerMode}>
-                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                        <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/>
-                        <line x1="12" y1="9" x2="12" y2="13"/>
-                        <line x1="12" y1="17" x2="12.01" y2="17"/>
-                    </svg>
-                </button>
-            {/snippet}
-        </DangerModeToggle>
+        {#if !codexSubscription}
+            <DangerModeToggle {active} onError={(m) => (banner = m)}>
+                {#snippet trigger(requestToggle, saving)}
+                    <button class="btn-icon danger-toggle" class:on={dangerMode}
+                            onclick={requestToggle} disabled={saving}
+                            title={dangerMode ? t("ai.title.danger_tip") : t("ai.toolbar.danger_enable")}
+                            aria-label={t("ai.toolbar.danger_aria")} aria-pressed={dangerMode}>
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/>
+                            <line x1="12" y1="9" x2="12" y2="13"/>
+                            <line x1="12" y1="17" x2="12.01" y2="17"/>
+                        </svg>
+                    </button>
+                {/snippet}
+            </DangerModeToggle>
+        {/if}
         <!-- New session: archive the current conversation and return to the
              picker state; the panel stays open. Disabled when there is no
              live conversation to end. -->
@@ -433,7 +504,10 @@
     {#if banner}
         <div class="banner">
             <span>{banner}</span>
-            <button class="btn-icon" onclick={() => (banner = null)}>×</button>
+            {#if offlinePreviewCandidate}
+                <button class="btn btn-sm" onclick={openOfflinePreview}>{t("ai.offline.preview")}</button>
+            {/if}
+            <button class="btn-icon" onclick={dismissBanner}>×</button>
         </div>
     {/if}
 
@@ -478,7 +552,7 @@
                                 <span class="cancelled-tag">{t("ai.bubble.cancelled")}</span>
                             {/if}
                         </div>
-                    {:else if item.kind === "web_tool" && session}
+                    {:else if item.kind === "web_tool" && session && !codexSubscription}
                         {#key item.proposal.id}
                             <WebToolConfirmCard
                                 {tabId}
@@ -489,7 +563,7 @@
                                 {active}
                             />
                         {/key}
-                    {:else if item.kind === "download" && session}
+                    {:else if item.kind === "download" && session && !codexSubscription}
                         {#key item.proposal.id}
                             <DownloadConfirmCard
                                 {tabId}
@@ -500,7 +574,7 @@
                                 {active}
                             />
                         {/key}
-                    {:else if item.kind === "analyze" && session}
+                    {:else if item.kind === "analyze" && session && !codexSubscription}
                         {#key item.proposal.id}
                             <AnalyzeConfirmCard
                                 {tabId}
@@ -511,7 +585,7 @@
                                 {active}
                             />
                         {/key}
-                    {:else if item.kind === "match" && session}
+                    {:else if item.kind === "match" && session && !codexSubscription}
                         {#key item.proposal.id}
                             <MatchConfirmCard
                                 {tabId}
@@ -524,7 +598,7 @@
                                 {active}
                             />
                         {/key}
-                    {:else if item.kind === "patch" && session}
+                    {:else if item.kind === "patch" && session && !codexSubscription}
                         {#key item.proposal.id}
                             <PatchConfirmCard
                                 {tabId}
@@ -537,7 +611,7 @@
                                 {active}
                             />
                         {/key}
-                    {:else if item.kind === "command" && session}
+                    {:else if item.kind === "command" && session && !codexSubscription}
                         {#key item.cmd.id}
                             <CommandConfirmDialog
                                 {tabId}
@@ -550,8 +624,10 @@
                                 {active}
                             />
                         {/key}
+                    {:else if codexSubscription && isToolItem(item)}
+                        <div class="bubble note">{t("ai.settings.codex.tools_disabled")}</div>
                     {:else if item.kind === "error"}
-                        <div class="bubble error">{item.text}</div>
+                        <div class="bubble error">{errMsg(item.text)}</div>
                     {:else if item.kind === "note"}
                         <div class="bubble note">{item.text}</div>
                     {/if}
@@ -569,7 +645,7 @@
                         {#each conversations as c (c.id)}
                             <div class="history-row">
                                 <button class="history-item" onclick={() => resumeConversation(c.id)}
-                                        disabled={busy || deletingId === c.id} title={t("ai.history.resume_tip")}>
+                                    disabled={busy || !ready || deletingId === c.id} title={t("ai.history.resume_tip")}>
                                     <span class="history-name">{c.title || t("ai.history.untitled")}</span>
                                     <span class="history-time">{fmtDate(c.updated_at)}</span>
                                 </button>
@@ -599,7 +675,7 @@
                     {t("ai.input.stop")}
                 </button>
             {:else}
-                <button class="btn btn-sm btn-primary" onclick={send} disabled={!inputText.trim() || busy}>
+                <button class="btn btn-sm btn-primary" onclick={send} disabled={!inputText.trim() || busy || !ready}>
                     {busy && !session ? t("ai.input.starting_short") : t("ai.input.send")}
                 </button>
             {/if}

@@ -103,6 +103,35 @@ fn is_terminal_ui_mutation(kind: &str, _payload: &serde_json::Value) -> bool {
     )
 }
 
+fn request_tools(client: &dyn LlmClient) -> Vec<super::llm::ToolSchema> {
+    if client.supports_tools() {
+        tools::all_tools()
+    } else {
+        Vec::new()
+    }
+}
+
+fn request_output_schema(
+    client: &dyn LlmClient,
+    output_schema: Option<serde_json::Value>,
+) -> Option<serde_json::Value> {
+    if client.supports_tools() {
+        None
+    } else {
+        output_schema
+    }
+}
+
+fn ensure_response_compatible(
+    client: &dyn LlmClient,
+    response: &super::llm::ChatResponse,
+) -> AppResult<()> {
+    if !client.supports_tools() && !response.tool_calls.is_empty() {
+        return Err(AppError::config("llm_tool_calls_unsupported", json!({})));
+    }
+    Ok(())
+}
+
 fn resolve_loadable_skill(id: &str, user_skills: &[SkillRecord]) -> Result<SkillRecord, String> {
     if id == skills::GENERAL_ID {
         return Err(
@@ -129,6 +158,7 @@ fn resolve_loadable_skill(id: &str, user_skills: &[SkillRecord]) -> Result<Skill
 pub enum UserAction {
     Message {
         text: String,
+        output_schema: Option<serde_json::Value>,
         ack: Option<oneshot::Sender<AppResult<()>>>,
     },
     RejectCommand {
@@ -223,6 +253,7 @@ pub struct DiagnoseSession {
     pub skill: String,
     pub model: String,
     pub provider: String,
+    pub(crate) tools_supported: bool,
     pub action_tx: mpsc::UnboundedSender<UserAction>,
     pub audit: Arc<Mutex<AuditLog>>,
     /// 流式响应的取消句柄。actor 在 chat() 前把 Notify 装进 slot，chat 完成/取消后清空。
@@ -254,6 +285,10 @@ pub struct DiagnoseSession {
 }
 
 impl DiagnoseSession {
+    pub(crate) fn supports_tools(&self) -> bool {
+        self.tools_supported
+    }
+
     pub(crate) fn request_stop(&self) {
         // Cancel an already-running LLM request first. Clone the notifier out
         // of the std mutex before notifying, matching ai_cancel_stream's lock
@@ -390,6 +425,7 @@ pub fn start(mut cfg: SessionConfig, app: crate::emitter::Host) -> AppResult<Pen
     let system_prompt = sanitize::redact(&cfg.system_prompt, &cfg.redact_rules);
 
     let (action_tx, action_rx) = mpsc::unbounded_channel();
+    let tools_supported = cfg.client.supports_tools();
     let initial_audit = std::mem::take(&mut cfg.initial_audit);
     let audit = Arc::new(Mutex::new(initial_audit));
     if let Ok(mut g) = audit.lock() {
@@ -412,6 +448,7 @@ pub fn start(mut cfg: SessionConfig, app: crate::emitter::Host) -> AppResult<Pen
         skill: cfg.skill.clone(),
         model: cfg.model.clone(),
         provider,
+        tools_supported,
         action_tx,
         audit: audit.clone(),
         cancel_slot: cancel_slot.clone(),
@@ -524,7 +561,11 @@ impl Actor {
                 None => break,
             };
             match action {
-                UserAction::Message { text, ack } => {
+                UserAction::Message {
+                    text,
+                    output_schema,
+                    ack,
+                } => {
                     self.history.push(ChatMessage::User {
                         content: text.clone(),
                     });
@@ -537,7 +578,7 @@ impl Actor {
                     self.emit("user_message", json!({ "text": text }));
                     Self::complete_action(ack, Ok(()));
                     if !*shutdown_rx.borrow() {
-                        if let Err(e) = self.dialogue_turn(&mut shutdown_rx).await {
+                        if let Err(e) = self.dialogue_turn(&mut shutdown_rx, output_schema).await {
                             self.audit_push(AuditKind::Error {
                                 message: e.to_string(),
                             });
@@ -586,7 +627,7 @@ impl Actor {
     fn drain_accepted_idle_actions(&mut self) {
         loop {
             match self.action_rx.try_recv() {
-                Ok(UserAction::Message { text, ack }) => {
+                Ok(UserAction::Message { text, ack, .. }) => {
                     self.close_interrupted_history_tail();
                     self.history.push(ChatMessage::User {
                         content: text.clone(),
@@ -764,7 +805,11 @@ impl Actor {
         }
     }
 
-    async fn dialogue_turn(&mut self, shutdown_rx: &mut watch::Receiver<bool>) -> AppResult<()> {
+    async fn dialogue_turn(
+        &mut self,
+        shutdown_rx: &mut watch::Receiver<bool>,
+        output_schema: Option<serde_json::Value>,
+    ) -> AppResult<()> {
         loop {
             if *shutdown_rx.borrow() {
                 return Ok(());
@@ -784,18 +829,26 @@ impl Actor {
             // Shell section 跟 system_prompt 拼在一起喂 LLM。shell_kind 启动时定死，
             // 不再变，这里拼是为了不把 section 烤进 self.system_prompt（保持其干净）。
             // section 是 rssh 自己生成的静态字符串，不含敏感信息，不需要过 redact。
-            let system_prompt = format!(
-                "{}{}",
-                self.system_prompt,
-                self.cfg.shell_kind.prompt_section()
-            );
+            let system_prompt = if self.cfg.client.supports_tools() {
+                format!(
+                    "{}{}",
+                    self.system_prompt,
+                    self.cfg.shell_kind.prompt_section()
+                )
+            } else {
+                self.system_prompt.clone()
+            };
 
             let req = ChatRequest {
                 system_prompt,
                 messages: redacted_history.clone(),
-                tools: tools::all_tools(),
+                tools: request_tools(self.cfg.client.as_ref()),
                 model: self.cfg.model.clone(),
                 max_tokens: 4096,
+                output_schema: request_output_schema(
+                    self.cfg.client.as_ref(),
+                    output_schema.clone(),
+                ),
             };
 
             self.audit_push(AuditKind::LlmRequest {
@@ -919,6 +972,8 @@ impl Actor {
                 }
             };
 
+            let response_error = ensure_response_compatible(self.cfg.client.as_ref(), &resp).err();
+
             // tokens_in/out ride on the end event so the panel can show
             // session spend. Pure tool_use turns (empty text) also emit —
             // their tokens cost money too, the front-end must not miss them.
@@ -936,6 +991,19 @@ impl Actor {
                 tokens_in: resp.tokens_in,
                 tokens_out: resp.tokens_out,
             });
+
+            if let Some(error) = response_error {
+                self.history.push(ChatMessage::Assistant {
+                    content: if resp.text.is_empty() {
+                        "[response contained unsupported tool calls]".into()
+                    } else {
+                        resp.text
+                    },
+                    tool_calls: Vec::new(),
+                    reasoning_content: resp.reasoning_content,
+                });
+                return Err(error);
+            }
 
             // Build the turn's history-extension as a single pending vec
             // and commit it atomically. Two invariants this enforces:
@@ -1265,7 +1333,7 @@ impl Actor {
                     Self::reject_tool_action(ack, &received_id);
                     continue;
                 }
-                UserAction::Message { text, ack } => {
+                UserAction::Message { text, ack, .. } => {
                     // 工具调用中拒绝新消息（同 handle_run_command 现有行为）
                     let redacted = sanitize::redact(&text, &self.cfg.redact_rules);
                     self.audit_push(AuditKind::Note {
@@ -1837,7 +1905,7 @@ impl Actor {
                 // 命令审批期间不能接受新消息：tool_use 必须有对应 tool_result 才能再开下一轮 user。
                 // 之前 _ => continue 把 Message 默默吞掉——用户敲完字消息消失，没有任何反馈。
                 // 现在显式 audit + emit ai:error，让用户知道"先决定命令再发消息"。
-                UserAction::Message { text, ack } => {
+                UserAction::Message { text, ack, .. } => {
                     // 不要把用户原文裸塞进 audit——可能含 secret/PII（用户复制粘贴
                     // 时随手带的）。audit log 可能离开本机（用户分享给开发者排错），
                     // 走跟 history/command_output 同一套 redact 规则，至少把已知模式
@@ -2031,6 +2099,28 @@ impl Actor {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use async_trait::async_trait;
+
+    struct TextOnlyClient;
+
+    #[async_trait]
+    impl LlmClient for TextOnlyClient {
+        async fn chat(
+            &self,
+            _req: ChatRequest,
+            _sink: DeltaSink,
+        ) -> AppResult<super::super::llm::ChatResponse> {
+            unreachable!("text-only test client does not perform requests")
+        }
+
+        async fn list_models(&self) -> AppResult<Vec<super::super::llm::ModelInfo>> {
+            unreachable!("text-only test client does not list models")
+        }
+
+        fn supports_tools(&self) -> bool {
+            false
+        }
+    }
 
     fn user(content: &str) -> ChatMessage {
         ChatMessage::User {
@@ -2167,5 +2257,42 @@ mod tests {
 
         let err = resolve_loadable_skill("missing", &[]).unwrap_err();
         assert!(err.contains("Unknown skill id: missing"));
+    }
+
+    #[test]
+    fn text_only_request_options_omit_tools_and_keep_schema() {
+        let http = super::super::llm::OpenAiCompletionsClient::new(
+            "key".into(),
+            "https://example.test/v1".into(),
+        );
+        let text_only = TextOnlyClient;
+        let schema = json!({ "type": "object" });
+
+        assert!(!request_tools(&http).is_empty());
+        assert!(request_tools(&text_only).is_empty());
+        assert_eq!(
+            request_output_schema(&text_only, Some(schema.clone())),
+            Some(schema.clone())
+        );
+        assert_eq!(request_output_schema(&http, Some(schema)), None);
+    }
+
+    #[test]
+    fn text_only_response_tool_calls_are_rejected_before_dispatch() {
+        let response = super::super::llm::ChatResponse {
+            text: String::new(),
+            tool_calls: vec![ToolCall {
+                id: "tool-1".into(),
+                name: "run_command".into(),
+                input: json!({}),
+            }],
+            stop_reason: "tool_calls".into(),
+            tokens_in: None,
+            tokens_out: None,
+            reasoning_content: None,
+        };
+
+        let error = ensure_response_compatible(&TextOnlyClient, &response).unwrap_err();
+        assert_eq!(error.code(), "llm_tool_calls_unsupported");
     }
 }

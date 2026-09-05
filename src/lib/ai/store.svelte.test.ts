@@ -87,6 +87,14 @@ describe("panel visibility", () => {
     expect(ai.pendingPrefill("tab-b")?.text).toBe("from B");
   });
 
+  it("retains the extraction marker in pending prefill metadata", async () => {
+    vi.resetModules();
+    const ai = await import("./store.svelte.ts");
+
+    ai.prefillInput("tab-a", "offline prompt", true);
+    expect(ai.pendingPrefill("tab-a")).toEqual({ text: "offline prompt", offlineContext: true });
+  });
+
   it("uses the legacy saved width as each new tab's independent initial width", async () => {
     vi.stubGlobal("localStorage", {
       getItem: (key: string) => key === "ai-panel-width" ? "515" : null,
@@ -156,6 +164,112 @@ describe("panel visibility", () => {
   });
 });
 
+describe("codex subscription frontend contract", () => {
+  it("uses ready for subscription providers and key presence for HTTP providers", async () => {
+    vi.resetModules();
+    const ai = await import("./store.svelte.ts");
+
+    expect(ai.isReady({ protocol: "codex-subscription", has_api_key: false, ready: true })).toBe(true);
+    expect(ai.isReady({ protocol: "codex-subscription", has_api_key: true, ready: false })).toBe(false);
+    expect(ai.isReady({ protocol: "openai-completions", has_api_key: true, ready: false })).toBe(true);
+    expect(ai.isReady({ protocol: "openai-completions", has_api_key: false, ready: true })).toBe(false);
+  });
+
+  it("wraps codex commands and preserves the empty model-list endpoint", async () => {
+    vi.resetModules();
+    const ai = await import("./store.svelte.ts");
+    const status = {
+      available: true,
+      authenticated: false,
+      executable: "codex",
+      version: "0.153.2",
+    };
+    invokeMock
+      .mockResolvedValueOnce(status)
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce({ loginId: "login-1", authUrl: "https://auth.openai.com/fixture" })
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce([{ id: "gpt-5.6-luna", display_name: "Luna", supported_reasoning_efforts: [], default_reasoning_effort: null }]);
+
+    expect(await ai.codexStatus()).toEqual(status);
+    await ai.configureCodex("");
+    expect(await ai.startCodexLogin()).toEqual({ loginId: "login-1", authUrl: "https://auth.openai.com/fixture" });
+    await ai.cancelCodexLogin("login-1");
+    await ai.logoutCodex();
+    await ai.listModels("codex-subscription", "");
+
+    expect(invokeMock.mock.calls.slice(0, 6)).toEqual([
+      ["ai_codex_status"],
+      ["ai_codex_configure", { executable: "" }],
+      ["ai_codex_login_start"],
+      ["ai_codex_login_cancel", { loginId: "login-1" }],
+      ["ai_codex_logout"],
+      ["ai_list_models", {
+        providerId: null,
+        protocol: "codex-subscription",
+        endpoint: "",
+        apiKey: null,
+      }],
+    ]);
+  });
+
+  it("does not ask the backend to probe a shell for a subscription provider", async () => {
+    vi.resetModules();
+    const ai = await import("./store.svelte.ts");
+    invokeMock.mockImplementation(async (command: string) => command === "ai_settings_get"
+      ? {
+          provider: "codex",
+          provider_name: "Codex",
+          protocol: "codex-subscription",
+          model: "gpt-5.6-luna",
+          endpoint: "",
+          has_api_key: false,
+          ready: true,
+          danger_mode: false,
+          auto_run_command: true,
+          auto_match_file: true,
+          auto_download_file: false,
+          auto_analyze_locally: false,
+          auto_patch_cp: false,
+          auto_patch_modify: false,
+          auto_patch_diff: false,
+          auto_patch_mv: false,
+          auto_web_search: false,
+          auto_web_fetch: false,
+          auto_detect_remote_shell: true,
+        }
+      : null);
+    await ai.loadSettings();
+    expect(await ai.remoteShellProbeNeeded("ssh-1")).toBe(false);
+    expect(invokeMock).not.toHaveBeenCalledWith("ai_remote_shell_probe_needed", expect.anything());
+  });
+
+  it("passes reasoningEffort through provider save without changing the wire name", async () => {
+    vi.resetModules();
+    const ai = await import("./store.svelte.ts");
+    invokeMock.mockResolvedValue("codex-1");
+
+    await ai.saveProvider({
+      name: "Codex",
+      protocol: "codex-subscription",
+      model: "gpt-5.6-luna",
+      endpoint: "",
+      reasoningEffort: "none",
+    });
+
+    expect(invokeMock).toHaveBeenCalledWith("ai_provider_save", {
+      patch: {
+        name: "Codex",
+        protocol: "codex-subscription",
+        model: "gpt-5.6-luna",
+        endpoint: "",
+        reasoningEffort: "none",
+      },
+    });
+  });
+});
+
 describe("tab lifecycle", () => {
   const args = {
     tabId: "tab-a",
@@ -194,6 +308,35 @@ describe("tab lifecycle", () => {
       instanceId: "instance-a",
       text: "hello",
     });
+  });
+
+  it("only sends offlineContext on an explicitly marked extraction message", async () => {
+    vi.resetModules();
+    const ai = await import("./store.svelte.ts");
+    ai.activateTab("tab-a");
+    ai.openPanel("tab-a");
+    invokeMock.mockImplementation(async (command: string) => {
+      if (command === "ai_session_start") return info;
+      return null;
+    });
+    const lease = ai.captureSessionLease("tab-a");
+    await ai.startSession({ ...args, lease });
+
+    await ai.sendMessage("tab-a", "normal", lease);
+    await ai.sendMessage("tab-a", "extraction", lease, true);
+
+    const sends = invokeMock.mock.calls.filter(([command]) => command === "ai_user_message");
+    expect(sends[0]).toEqual(["ai_user_message", {
+      tabId: "tab-a",
+      instanceId: "instance-a",
+      text: "normal",
+    }]);
+    expect(sends[1]).toEqual(["ai_user_message", {
+      tabId: "tab-a",
+      instanceId: "instance-a",
+      text: "extraction",
+      offlineContext: true,
+    }]);
   });
 
   it("flushes an enqueued user message when close wins the backend event race", async () => {

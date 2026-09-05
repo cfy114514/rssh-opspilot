@@ -345,6 +345,8 @@ fn profile_named_fwd_is_opened_as_a_profile() {
     let output = Command::new(env!("CARGO_BIN_EXE_rssh-cli"))
         .args(["profile", "open", "fwd"])
         .env("HOME", home.path())
+        .env("USERPROFILE", home.path())
+        .env("RSSH_DATA_DIR", home.path().join(".rssh"))
         .env("RSSH_APP", "1")
         .output()
         .expect("run rssh CLI");
@@ -363,6 +365,8 @@ fn forward_open_uses_the_forward_osc_action() {
     let output = Command::new(env!("CARGO_BIN_EXE_rssh-cli"))
         .args(["forward", "open", "tunnel"])
         .env("HOME", home.path())
+        .env("USERPROFILE", home.path())
+        .env("RSSH_DATA_DIR", home.path().join(".rssh"))
         .env("RSSH_APP", "1")
         .output()
         .expect("run rssh CLI");
@@ -381,6 +385,8 @@ fn profile_list_treats_cred_as_a_search_query() {
     let output = Command::new(env!("CARGO_BIN_EXE_rssh-cli"))
         .args(["profile", "list", "cred"])
         .env("HOME", home.path())
+        .env("USERPROFILE", home.path())
+        .env("RSSH_DATA_DIR", home.path().join(".rssh"))
         .output()
         .expect("run rssh CLI");
 
@@ -397,6 +403,8 @@ fn bare_rssh_still_lists_profiles_outside_the_linux_gui_shadow() {
     let home = tempfile::tempdir().expect("temporary HOME");
     let output = Command::new(env!("CARGO_BIN_EXE_rssh-cli"))
         .env("HOME", home.path())
+        .env("USERPROFILE", home.path())
+        .env("RSSH_DATA_DIR", home.path().join(".rssh"))
         .env("RSSH_APP", "1")
         .output()
         .expect("run rssh CLI");
@@ -415,6 +423,8 @@ fn group_list_reports_an_empty_store() {
     let output = Command::new(env!("CARGO_BIN_EXE_rssh-cli"))
         .args(["group", "list"])
         .env("HOME", home.path())
+        .env("USERPROFILE", home.path())
+        .env("RSSH_DATA_DIR", home.path().join(".rssh"))
         .output()
         .expect("run rssh CLI");
 

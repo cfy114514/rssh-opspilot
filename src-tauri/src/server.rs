@@ -71,6 +71,9 @@ fn build_state() -> AppResult<AppState> {
         host_key_waiters: Mutex::new(HashMap::new()),
         passphrase_cache: Mutex::new(HashMap::new()),
         ai_sessions: Mutex::new(HashMap::new()),
+        codex_subscription: Arc::new(crate::ai::codex_subscription::CodexSubscription::new(
+            data_dir.clone(),
+        )),
         ai_session_owners: Arc::new(Mutex::new(HashMap::new())),
         ai_remote_shell_cache: Mutex::new(HashMap::new()),
         data_dir,
@@ -782,16 +785,9 @@ fn dispatch(
         "ai_cache_remote_shell" => {
             let target_id: String = arg(&args, "targetId")?;
             let shell: crate::ai::shell::ShellKind = arg(&args, "shell")?;
-            if let Some(profile_id) = locked(&state.sessions)
-                .map_err(err_value)?
-                .get(&target_id)
-                .map(|h| h.profile_id().to_string())
-            {
-                locked(&state.ai_remote_shell_cache)
-                    .map_err(err_value)?
-                    .insert(profile_id, shell);
-            }
-            Ok(Value::Null)
+            ok(crate::ai::commands::ai_cache_remote_shell_impl(
+                state, target_id, shell,
+            ))
         }
 
         // ---- orphan-session reap on (re)mount: the server outlives a page reload,
@@ -1136,14 +1132,30 @@ async fn dispatch_async(
             )
             .await)
         }
-        "ai_user_message" => ok(crate::ai::commands::ai_user_message_impl(
+        "ai_user_message" => ok(crate::ai::commands::ai_user_message_with_context_impl(
             state,
             &arg::<String>(&args, "tabId")?,
             owner,
             arg(&args, "text")?,
+            args.get("offlineContext")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
             args.get("instanceId").and_then(Value::as_str),
         )
         .await),
+        "ai_codex_status" => ok(crate::ai::commands::ai_codex_status_impl(state).await),
+        "ai_codex_configure" => ok(crate::ai::commands::ai_codex_configure_impl(
+            state,
+            arg(&args, "executable")?,
+        )
+        .await),
+        "ai_codex_login_start" => ok(crate::ai::commands::ai_codex_login_start_impl(state).await),
+        "ai_codex_login_cancel" => ok(crate::ai::commands::ai_codex_login_cancel_impl(
+            state,
+            arg(&args, "loginId")?,
+        )
+        .await),
+        "ai_codex_logout" => ok(crate::ai::commands::ai_codex_logout_impl(state).await),
         "ai_command_result" => ok(crate::ai::commands::ai_command_result_impl(
             state,
             &arg::<String>(&args, "tabId")?,
@@ -1806,8 +1818,10 @@ mod tests {
             passphrase_waiters: Mutex::new(HashMap::new()),
             host_key_waiters: Mutex::new(HashMap::new()),
             passphrase_cache: Mutex::new(HashMap::new()),
-            window_groups: Mutex::new(crate::commands::window::WindowGroups::default()),
             ai_sessions: Mutex::new(HashMap::new()),
+            codex_subscription: Arc::new(crate::ai::codex_subscription::CodexSubscription::new(
+                std::path::PathBuf::new(),
+            )),
             ai_session_owners: Arc::new(Mutex::new(HashMap::new())),
             ai_remote_shell_cache: Mutex::new(HashMap::new()),
             data_dir: std::path::PathBuf::new(),

@@ -99,6 +99,7 @@ pub struct AppState {
     pub passphrase_cache: Mutex<HashMap<String, zeroize::Zeroizing<String>>>,
     /// AI 排障会话表（ai_session_id → DiagnoseSession）
     pub ai_sessions: Mutex<HashMap<String, DiagnoseSession>>,
+    pub codex_subscription: Arc<crate::ai::codex_subscription::CodexSubscription>,
     /// AI actors intentionally keep `tab_id` reuse semantics, so ownership is
     /// tracked separately from the transport registry's permanent UUID tombstones.
     pub ai_session_owners: Arc<Mutex<HashMap<String, AiSessionRecord>>>,

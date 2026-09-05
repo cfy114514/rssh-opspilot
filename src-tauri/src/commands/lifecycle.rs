@@ -1278,6 +1278,9 @@ mod tests {
             host_key_waiters: Mutex::new(HashMap::new()),
             passphrase_cache: Mutex::new(HashMap::new()),
             ai_sessions: Mutex::new(HashMap::new()),
+            codex_subscription: Arc::new(crate::ai::codex_subscription::CodexSubscription::new(
+                PathBuf::new(),
+            )),
             ai_session_owners: Arc::new(Mutex::new(HashMap::new())),
             ai_remote_shell_cache: Mutex::new(HashMap::new()),
             data_dir: PathBuf::new(),
@@ -1653,6 +1656,7 @@ mod tests {
                 skill: "general".to_owned(),
                 model: "model".to_owned(),
                 provider: "provider".to_owned(),
+                tools_supported: true,
                 action_tx,
                 audit: Arc::new(Mutex::new(crate::ai::audit::AuditLog::default())),
                 cancel_slot: Arc::new(Mutex::new(None)),
@@ -1719,6 +1723,7 @@ mod tests {
                 skill: "general".to_owned(),
                 model: "model".to_owned(),
                 provider: "provider".to_owned(),
+                tools_supported: true,
                 action_tx,
                 audit: Arc::new(Mutex::new(crate::ai::audit::AuditLog::default())),
                 cancel_slot: Arc::new(Mutex::new(Some(stream_cancel))),
@@ -2211,6 +2216,7 @@ mod tests {
             .action_tx
             .send(crate::ai::session::UserAction::Message {
                 text: "first".into(),
+                output_schema: None,
                 ack: None,
             })
             .expect("the command accepted the message");
@@ -2248,6 +2254,7 @@ mod tests {
                 .action_tx
                 .send(crate::ai::session::UserAction::Message {
                     text: text.into(),
+                    output_schema: None,
                     ack: None,
                 })
                 .expect("the command accepted the message");
@@ -2292,6 +2299,7 @@ mod tests {
             .action_tx
             .send(crate::ai::session::UserAction::Message {
                 text: "discard me".into(),
+                output_schema: None,
                 ack: Some(message_ack_tx),
             })
             .unwrap();
@@ -2451,6 +2459,7 @@ mod tests {
             None,
             crate::ai::session::UserAction::Message {
                 text: "too late".into(),
+                output_schema: None,
                 ack: None,
             },
         )
@@ -2760,6 +2769,7 @@ mod tests {
             .action_tx
             .send(crate::ai::session::UserAction::Message {
                 text: "diagnose".into(),
+                output_schema: None,
                 ack: None,
             })
             .unwrap();

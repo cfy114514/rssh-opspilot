@@ -90,6 +90,8 @@ impl LlmClient for DeepSeekClient {
                 Some(ModelInfo {
                     id,
                     display_name: None,
+                    supported_reasoning_efforts: Vec::new(),
+                    default_reasoning_effort: None,
                 })
             })
             .collect();

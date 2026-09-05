@@ -596,8 +596,8 @@
             : t("terminal.block.menu.copy_image");
         // 染色是 per-block 状态 toggle（像 fold），不走 Finder 多选——标签随右键块的染色态翻转。
         const colored = coloredBlockIds.has(r.id);
-        // 发送到 AI 走 Finder 多选（像复制）。未配 API key → 置灰。
-        const aiConfigured = ai.settings()?.has_api_key === true;
+        // 发送到 AI 走 Finder 多选（像复制）。未就绪的 provider → 置灰。
+        const aiConfigured = ai.isReady(ai.settings());
         const sendAiLabel = n > 1
             ? t("terminal.block.menu.send_ai_n", { n })
             : t("terminal.block.menu.send_ai");
@@ -785,7 +785,7 @@
     }
 
     async function askAiAboutNextCommand() {
-        if (ai.settings()?.has_api_key !== true) return;
+        if (!ai.isReady(ai.settings())) return;
         const context = await readSafeNextCommandContext();
         if (!context) return;
         const prompt = [
@@ -800,7 +800,7 @@
     }
 
     async function summarizeNextCommandSession(copy = false) {
-        if (!copy && ai.settings()?.has_api_key !== true) return;
+        if (!copy && !ai.isReady(ai.settings())) return;
         const context = await readSafeNextCommandContext();
         if (!context) return;
         try {
@@ -809,7 +809,7 @@
                 toast.success(t("terminal.next_command.material_copied"));
             } else {
                 ai.openPanel(tabId);
-                ai.prefillInput(tabId, context.extractionPrompt);
+                ai.prefillInput(tabId, context.extractionPrompt, true);
             }
             dismissNextCommandSuggestions();
         } catch (error) {
@@ -1615,7 +1615,7 @@
         // 进程缓存未命中（remoteShellProbeNeeded）。命中即写 profile 缓存，供 AI 会话
         // 启动时读初始 shell。fire-and-forget，不阻塞终端就绪；重连时缓存已命中 →
         // needed=false，不重复刷探针。
-        if (isSsh) {
+        if (isSsh && ai.settings()?.protocol !== "codex-subscription") {
             const sid = sessionId!;
             void ai.remoteShellProbeNeeded(sid)
                 .then((needed) => { if (needed) return ai.probeRemoteShell(sid); })
@@ -2344,7 +2344,7 @@
         <NextCommandPalette
             suggestions={nextCommandSuggestions}
             mobile={app.isMobile}
-            canAskAi={ai.settings()?.has_api_key === true}
+            canAskAi={ai.isReady(ai.settings())}
             onAccept={acceptNextCommand}
             onDismiss={dismissNextCommandSuggestionsByUser}
             onAskAi={() => { void askAiAboutNextCommand(); }}

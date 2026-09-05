@@ -1,0 +1,101 @@
+{
+  "type": "object",
+  "properties": {
+    "format": {
+      "type": "string",
+      "enum": [
+        "rssh-offline-context"
+      ]
+    },
+    "version": {
+      "type": "integer",
+      "enum": [
+        1
+      ]
+    },
+    "entries": {
+      "type": "array",
+      "maxItems": 200,
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "scope": {
+            "anyOf": [
+              {
+                "type": "object",
+                "properties": {},
+                "required": [],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "host": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "host"
+                ],
+                "additionalProperties": false
+              }
+            ]
+          },
+          "shell": {
+            "type": "string",
+            "enum": [
+              "posix",
+              "powershell",
+              "cmd",
+              "any"
+            ]
+          },
+          "triggers": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 8
+          },
+          "command": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "risk": {
+            "type": "string",
+            "enum": [
+              "read-only"
+            ]
+          },
+          "confidence": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1
+          }
+        },
+        "required": [
+          "id",
+          "scope",
+          "shell",
+          "triggers",
+          "command",
+          "reason",
+          "risk",
+          "confidence"
+        ],
+        "additionalProperties": false
+      }
+    }
+  },
+  "required": [
+    "format",
+    "version",
+    "entries"
+  ],
+  "additionalProperties": false
+}

@@ -36,13 +36,15 @@
     // 激活串行化：同一时刻最多一个 activate 在途，radio 随之禁用 ——
     // 慢失败的老请求不可能把过期的 previousId 盖到新选择上。
     let activating = $state(false);
+    let codexActive = $derived(ai.settings()?.protocol === "codex-subscription");
 
-    /** 协议三卡 —— 表单顶部的类型选择（对应动态发现的 Docker/kubectl 卡）。
+    /** 协议卡 —— 表单顶部的类型选择（对应动态发现的 Docker/kubectl 卡）。
      * 副行文案走 i18n，卡标题是专有名词不翻译。 */
     const PROTOCOL_CARDS: { protocol: LlmProtocol; label: string; subKey: string }[] = [
         { protocol: "deepseek-thinking", label: "DeepSeek Thinking", subKey: "ai.settings.protocol.sub.deepseek" },
         { protocol: "openai-completions", label: "OpenAI Completions", subKey: "ai.settings.protocol.sub.openai" },
         { protocol: "anthropic-messages", label: "Anthropic Messages", subKey: "ai.settings.protocol.sub.anthropic" },
+        { protocol: "codex-subscription", label: "ChatGPT / Codex Subscription", subKey: "ai.settings.protocol.sub.codex" },
     ];
 
     /** endpoint 快捷填充 —— 对应凭证页的 ~/.ssh/id_rsa / id_ed25519 chips。 */
@@ -55,10 +57,20 @@
         "anthropic-messages": [
             { label: "Anthropic", url: "https://api.anthropic.com/v1/messages" },
         ],
+        "codex-subscription": [],
     };
 
     function protocolLabel(protocol: string): string {
         return PROTOCOL_CARDS.find((c) => c.protocol === protocol)?.label ?? protocol;
+    }
+
+    function providerSubtitle(p: AiProviderRecord): string {
+        if (p.protocol === "codex-subscription") {
+            return `${protocolLabel(p.protocol)} · ${p.model || "—"} · ${p.ready === true
+                ? t("ai.settings.codex.ready")
+                : t("ai.settings.codex.not_ready")}`;
+        }
+        return `${protocolLabel(p.protocol)} · ${p.endpoint} · ${p.model}`;
     }
 
     // ─── Danger mode（全局，跟 provider 无关）────────────────────────
@@ -157,6 +169,11 @@
         }
     }
 
+    async function refreshAiState() {
+        await refreshProviders();
+        await ai.loadSettings();
+    }
+
     /** 新建：空表单（默认协议 = 第一张卡）。 */
     function startAdd() {
         editId = null;
@@ -182,6 +199,8 @@
             model: "",
             endpoint: "",
             has_api_key: false,
+            reasoning_effort: null,
+            ready: false,
         };
     }
 
@@ -241,6 +260,7 @@
     async function onProviderSaved(id: string) {
         cancelForm();
         await refreshProviders();
+        if (activeId) await ai.loadSettings();
         // 首个 provider 落地即激活 —— 消灭"建了 provider 但没有 active"的死角。
         // 激活失败要报出来且不认领 activeId，否则 UI 显示"使用中"是假的。
         if (!activeId) {
@@ -581,6 +601,7 @@
                     protocolCards={PROTOCOL_CARDS}
                     endpointChips={ENDPOINT_CHIPS}
                     onSave={onProviderSaved}
+                    onChanged={refreshAiState}
                     onCancel={cancelForm}
                 />
             {/key}
@@ -593,6 +614,7 @@
                     protocolCards={PROTOCOL_CARDS}
                     endpointChips={ENDPOINT_CHIPS}
                     onSave={onProviderSaved}
+                    onChanged={refreshAiState}
                     onCancel={cancelForm}
                 />
             {:else}
@@ -606,8 +628,8 @@
                             <span class="shell-radio-indicator" aria-hidden="true"></span>
                             <div class="provider-text">
                                 <div class="provider-name" title={p.name}>{p.name}</div>
-                                <div class="provider-sub" title={`${protocolLabel(p.protocol)} · ${p.endpoint} · ${p.model}`}>
-                                    {protocolLabel(p.protocol)} · {p.endpoint} · {p.model}
+                                <div class="provider-sub" title={providerSubtitle(p)}>
+                                    {providerSubtitle(p)}
                                 </div>
                             </div>
                         </label>
@@ -652,6 +674,7 @@
         {#if byokNote}<span class="note">{byokNote}</span>{/if}
     </div>
 
+    {#if !codexActive}
     <div class="section-label">{t("ai.settings.danger.section")}</div>
     <!-- 危险模式 + 8 个 per-tool 自动批准合在一个 .card.surface-raised（参考 SyncScreen）。
          视觉上是一组语义关联的配置，不再拆成两个浮空卡片。 -->
@@ -749,6 +772,7 @@
             </label>
         </div>
     </div>
+    {/if}
 
     <!-- 远端 shell 自动探测 —— 独立卡片，跟 danger_mode 解耦。
          off（默认）：远端假设 POSIX，保持 99% 用户零开销。
@@ -759,14 +783,16 @@
                 <div id="shell-detect-title" class="danger-title">
                     {t("ai.settings.shell_detect.label")}
                 </div>
-                <div id="shell-detect-desc" class="danger-desc">{t("ai.settings.shell_detect.desc")}</div>
+                <div id="shell-detect-desc" class="danger-desc">
+                    {#if codexActive}{t("ai.settings.shell_detect.codex_disabled")}{:else}{t("ai.settings.shell_detect.desc")}{/if}
+                </div>
                 {#if shellDetectNote}
                     <div class="danger-err">{shellDetectNote}</div>
                 {/if}
             </div>
             <label class="switch">
                 <input type="checkbox" bind:checked={autoDetectRemoteShell}
-                       disabled={savingShellDetect}
+                       disabled={savingShellDetect || codexActive}
                        onchange={(e) => persistAutoDetectShell((e.target as HTMLInputElement).checked)}
                        aria-labelledby="shell-detect-title"
                        aria-describedby="shell-detect-desc"/>

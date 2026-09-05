@@ -80,6 +80,37 @@ rssh opspilot-memory clear --yes
 - 当前 fork 复用 RSSH 既有传输层；保留完整 OpenSSH `ProxyJump`、Agent、MFA
   行为的原生 `ssh.exe + ConPTY` 传输是下一阶段工作。
 
+### ChatGPT / Codex 订阅 Provider
+
+新增可选的 `Codex Subscription` 类型，通过官方本地 `codex app-server` 和
+ChatGPT 登录使用订阅，不经过代理，也不要求 OpenAI API Key。首版严格验证
+**Codex CLI 0.153.2**；RSSH 不自动下载安装或升级。其他版本需重新通过禁工具验收后才支持。
+
+1. 设置 → AI Provider → 选择 **Codex Subscription**。
+2. 程序路径留空自动检测，或填写已有 Codex 可执行文件的绝对路径。
+3. 点击**登录**，复制官方设备码，并在浏览器中完成设备码认证。
+4. 刷新模型目录；仅在目录存在 Luna 时预选 Luna，只有模型支持 `none` 时才默认关闭思考。
+   已保存的模型或档位失效时必须重新选择，不自动改用大模型。
+5. 保存并选用该 Provider，然后新建 AI 会话（已有会话保留原 Provider）。AI 请求仍需手动发送；提炼返回的 JSON 可进入现有预览确认流程，
+   确认前不写入离线知识库。
+
+该 Provider 只生成文本／JSON，不提供 RSSH 命令工具，不探测远端 Shell，不加载个人 Codex
+技能、MCP、Hook，不执行候选命令。每次生成使用临时 Codex 线程；RSSH 原有聊天记录机制不变，
+临时线程不代表云端零留存。登录凭据仅由 Codex 保存在进程内存中，重启运行时后需重新登录，使用独立目录
+`<RSSH 数据目录>/codex-subscription`，不复制你现有的 Codex 登录文件。
+程序路径与思考偏好只在本机保存，不进入配置同步。切换已有 HTTP Provider 到 Codex 时，
+保留但不使用、不导出其原有加密 API Key；明确删除 Provider 时才清除该凭据。不启动公开代理服务；首版一次只运行一个
+生成请求，RSSH 不重放失败的 turn，也不自动切换 API 计费；Codex 自身的有界传输重试仍由官方运行时处理。
+
+桌面是主要目标；Headless／JetBrains 在可信单用户部署中复用相同后端。
+移动端不运行本地订阅 Provider，已有 HTTP Provider 不受影响。本阶段不新增 CLI 登录／聊天命令。
+
+离线验收命令（不登录、不调用真实模型）：
+
+```powershell
+python scripts/check-codex-subscription.py --codex "C:\Codex程序的绝对路径\codex.exe"
+```
+
 ### 开发快速开始
 
 ```powershell

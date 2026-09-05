@@ -34,6 +34,9 @@ import type {
   ConversationMeta,
   PtyExecution,
   AiProviderRecord,
+  AiCodexLogin,
+  AiCodexStatus,
+  LlmProtocol,
   ModelInfo,
   RedactRuleRecord,
   ShellKind,
@@ -297,9 +300,9 @@ export async function disposeTab(tab_id: string): Promise<void> {
 // 把一段文本塞进某个 tab 的 ChatPanel 输入框（不发送）。色条"发送到 AI"用它：
 // 抽块文本 → openPanel → prefillInput，让用户过目/编辑后再发。
 // 每个 tab 独立一个槽；新对象 identity 保证同一段文本重复写入也能触发对应面板的 effect。
-let _prefillByTab = $state<Record<string, { text: string }>>({});
-export function prefillInput(tab_id: string, text: string) {
-  _prefillByTab[tab_id] = { text };
+let _prefillByTab = $state<Record<string, { text: string; offlineContext: boolean }>>({});
+export function prefillInput(tab_id: string, text: string, offlineContext = false) {
+  _prefillByTab[tab_id] = { text, offlineContext };
 }
 export function pendingPrefill(tab_id: string) { return _prefillByTab[tab_id] ?? null; }
 export function clearPrefill(tab_id: string) {
@@ -326,6 +329,13 @@ export function isKeyboardLocked(tab_id: string): boolean {
 }
 export function tokenUsage(tab_id: string): TokenUsage {
   return _tokensByTab[tab_id] ?? { tokens_in: 0, tokens_out: 0 };
+}
+
+export function isReady(settings: Pick<AiSettings, "protocol" | "has_api_key" | "ready"> | null | undefined = _settings): boolean {
+  if (!settings) return false;
+  return settings.protocol === "codex-subscription"
+    ? settings.ready === true
+    : settings.has_api_key === true;
 }
 
 /** Sum token spend across an audit log. LlmResponse entries carry the only
@@ -962,7 +972,12 @@ function sessionInstanceForLease(tab_id: string, lease: SessionLease): SessionIn
   return { tabId: tab_id, instanceId: info.instance_id };
 }
 
-export async function sendMessage(tab_id: string, text: string, lease: SessionLease) {
+export async function sendMessage(
+  tab_id: string,
+  text: string,
+  lease: SessionLease,
+  offlineContext = false,
+) {
   const session = sessionInstanceForLease(tab_id, lease);
   const sequence = ++_nextConversationMutationId;
   const clientId = `${session.instanceId}:${sequence}`;
@@ -979,6 +994,7 @@ export async function sendMessage(tab_id: string, text: string, lease: SessionLe
         tabId: session.tabId,
         instanceId: session.instanceId,
         text,
+        ...(offlineContext ? { offlineContext: true } : {}),
       });
       // The backend resolves only after the actor processed and persisted this
       // message. The optimistic bubble becomes durable on that processing ack.
@@ -1145,6 +1161,7 @@ export async function cancelStream(tab_id: string, lease: SessionLease): Promise
  *  false，于是连接 / 重连都不会重复刷探针。本地 PTY 的 target_id 不在后端 sessions 里
  *  → 自然 false。 */
 export async function remoteShellProbeNeeded(target_id: string): Promise<boolean> {
+  if (_settings?.protocol === "codex-subscription") return false;
   return invoke<boolean>("ai_remote_shell_probe_needed", { targetId: target_id });
 }
 
@@ -1833,6 +1850,8 @@ export interface ProviderSaveInput {
   endpoint: string;
   /** 空串=删除已存 key；undefined=保留。 */
   apiKey?: string;
+  /** Codex subscription effort; stored locally with the provider row only. */
+  reasoningEffort?: string | null;
   activate?: boolean;
 }
 
@@ -1866,6 +1885,26 @@ export async function listModels(
     endpoint,
     apiKey: opts?.apiKey || null,
   });
+}
+
+export async function codexStatus(): Promise<AiCodexStatus> {
+  return invoke<AiCodexStatus>("ai_codex_status");
+}
+
+export async function configureCodex(executable: string): Promise<void> {
+  await invoke("ai_codex_configure", { executable });
+}
+
+export async function startCodexLogin(): Promise<AiCodexLogin> {
+  return invoke<AiCodexLogin>("ai_codex_login_start");
+}
+
+export async function cancelCodexLogin(loginId: string): Promise<void> {
+  await invoke("ai_codex_login_cancel", { loginId });
+}
+
+export async function logoutCodex(): Promise<void> {
+  await invoke("ai_codex_logout");
 }
 
 // ─── 事件监听 ─────────────────────────────────────────────────────
