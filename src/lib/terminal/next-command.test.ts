@@ -181,6 +181,31 @@ describe("suggestNextCommands", () => {
     expect(cmd.map((item) => item.command)).toEqual(["netstat -ano", "ipconfig"]);
   });
 
+  it("offers shell-aware network prefixes without broad get- pollution", () => {
+    expect(suggestNextCommands({
+      recentBlocks: ["ordinary command output"],
+      input: "ss",
+    }).map((item) => item.command)).toEqual(["ss -lntp"]);
+    expect(suggestNextCommands({
+      recentBlocks: ["ordinary command output"],
+      shell: "cmd",
+      input: "net",
+    }).map((item) => item.command)).toEqual(["netstat -ano"]);
+    expect(suggestNextCommands({
+      recentBlocks: ["ordinary command output"],
+      shell: "powershell",
+      input: "get-net",
+    }).map((item) => item.command)).toEqual([
+      "Get-NetTCPConnection -State Listen",
+      "Get-NetIPConfiguration",
+    ]);
+    expect(suggestNextCommands({
+      recentBlocks: ["ordinary command output"],
+      shell: "powershell",
+      input: "get-",
+    }).map((item) => item.command)).toEqual(["Get-Location", "Get-ChildItem -Force"]);
+  });
+
   it("uses shell-aware read-only commands for disk-space diagnostics", () => {
     const posix = suggestNextCommands({
       recentBlocks: ["write failed: no space left on device"],

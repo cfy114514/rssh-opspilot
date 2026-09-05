@@ -118,7 +118,15 @@ function addSuggestion(
   });
 }
 
-const PREFIX_COMPLETIONS = [
+type PrefixCompletion = {
+  readonly command: string;
+  readonly reason: string;
+  readonly confidence: number;
+  readonly shells?: readonly NextCommandShell[];
+  readonly minPrefixLength?: number;
+};
+
+const PREFIX_COMPLETIONS: readonly PrefixCompletion[] = [
   {command: "git status --short", reason: "确认当前工作区改动", confidence: 0.64},
   {command: "git diff --stat", reason: "快速查看改动规模", confidence: 0.60},
   {command: "kubectl get pods", reason: "查看当前命名空间中的 Pod 状态", confidence: 0.64},
@@ -131,7 +139,25 @@ const PREFIX_COMPLETIONS = [
     reason: "查看正在运行的 systemd 服务",
     confidence: 0.60,
   },
-] as const;
+  {command: "ss -lntp", reason: "查看正在监听的 TCP 端口", confidence: 0.64, shells: ["posix"], minPrefixLength: 2},
+  {command: "ip addr", reason: "查看本机网络接口地址", confidence: 0.60, shells: ["posix"], minPrefixLength: 2},
+  {command: "netstat -ano", reason: "查看 Windows 连接和监听端口", confidence: 0.64, shells: ["cmd"], minPrefixLength: 3},
+  {command: "ipconfig", reason: "查看 Windows 网络接口配置", confidence: 0.60, shells: ["cmd"], minPrefixLength: 3},
+  {
+    command: "Get-NetTCPConnection -State Listen",
+    reason: "查看 PowerShell 监听端口",
+    confidence: 0.64,
+    shells: ["powershell"],
+    minPrefixLength: 7,
+  },
+  {
+    command: "Get-NetIPConfiguration",
+    reason: "查看 PowerShell 网络接口配置",
+    confidence: 0.60,
+    shells: ["powershell"],
+    minPrefixLength: 7,
+  },
+];
 
 function logCandidate(context: NextCommandContext, text: string): string {
   const matches = [...text.matchAll(/(?:^|\s)([A-Za-z0-9_./-]+\.log)\b/gi)]
@@ -283,6 +309,8 @@ export function suggestNextCommands(context: NextCommandContext): NextCommandSug
   // even when the surrounding output contains no recognizable signal.
   if (prefix) {
     for (const candidate of PREFIX_COMPLETIONS) {
+      if (candidate.shells && !candidate.shells.includes(shell)) continue;
+      if (candidate.minPrefixLength !== undefined && prefix.length < candidate.minPrefixLength) continue;
       const comparableCommand = caseInsensitive
         ? candidate.command.toLocaleLowerCase()
         : candidate.command;
