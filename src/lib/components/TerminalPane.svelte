@@ -60,6 +60,7 @@
         shouldRefreshNextCommandSuggestions,
     } from "../terminal/next-command-fill.ts";
     import type {OpsPilotFeedbackScope} from "../terminal/next-command-feedback.ts";
+    import {offlineContextStore} from "../terminal/offline-context-store.svelte.ts";
     import {createOpsPilotTerminalController} from "../terminal/opspilot-terminal-controller.ts";
     import {
         extractOpsPilotCommandObservation,
@@ -867,7 +868,7 @@
                 ? extractBlockTexts(terminal, blocks, foldStore)
                 : visible.slice(-20);
             const latestBlockId = blocks[blocks.length - 1]?.id ?? 0;
-            const key = `${sessionId}:${latestBlockId}:${line}`;
+            const key = `${sessionId}:${latestBlockId}:${line}:${offlineContextStore.revision()}`;
             if (key === nextCommandPromptKey) return;
             nextCommandPromptKey = key;
             const scope = currentOpsPilotScope(prompt.host, prompt.cwd);
@@ -878,6 +879,7 @@
                 cwd: prompt.cwd,
                 host: prompt.host,
                 recentBlocks,
+                offlineEntries: offlineContextStore.entries(),
             };
             const revision = ++nextCommandContextRevision;
             nextCommandScope = scope;
@@ -899,6 +901,11 @@
 
     $effect(() => {
         if (!app.nextCommandSuggestionsEnabled()) clearNextCommandSuggestions();
+    });
+
+    $effect(() => {
+        offlineContextStore.revision();
+        if (terminal) scheduleNextCommandSuggestions();
     });
 
     // Transport table — the per-tab byte-stream IPC contract lives in DATA, not in

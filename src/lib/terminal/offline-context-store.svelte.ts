@@ -22,6 +22,7 @@ export interface OfflineContextImportResult {
 
 export interface OfflineContextStore {
   entries(): readonly OfflineContextEntry[];
+  revision(): number;
   stats(): OfflineContextStats;
   importJson(raw: string, options?: OfflineContextParseOptions): OfflineContextImportResult;
   clear(): void;
@@ -53,11 +54,13 @@ export function createOfflineContextStore(
   storage: Storage | null = browserStorage(),
 ): OfflineContextStore {
   let current = $state<OfflineContextEntry[]>([]);
+  let currentRevision = $state(0);
 
   const reload = (): void => {
     const raw = storage?.getItem(OFFLINE_CONTEXT_STORAGE_KEY);
     if (!raw) {
       current = [];
+      currentRevision++;
       return;
     }
     try {
@@ -67,6 +70,7 @@ export function createOfflineContextStore(
       // leaving the raw value available for a future compatible parser.
       current = [];
     }
+    currentRevision++;
   };
 
   const persist = (entries: readonly OfflineContextEntry[]): void => {
@@ -76,6 +80,7 @@ export function createOfflineContextStore(
     const validated = parseOfflineContextJson(canonical);
     if (storage) storage.setItem(OFFLINE_CONTEXT_STORAGE_KEY, artifactJson(validated.entries));
     current = [...validated.entries];
+    currentRevision++;
   };
 
   reload();
@@ -83,6 +88,10 @@ export function createOfflineContextStore(
   return {
     entries() {
       return current;
+    },
+
+    revision() {
+      return currentRevision;
     },
 
     stats() {
@@ -113,6 +122,7 @@ export function createOfflineContextStore(
     clear() {
       if (storage) storage.removeItem(OFFLINE_CONTEXT_STORAGE_KEY);
       current = [];
+      currentRevision++;
     },
 
     reload,

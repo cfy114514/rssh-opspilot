@@ -1,4 +1,6 @@
 import {detectPrompt} from "./prompt.ts";
+import {matchOfflineContext} from "./offline-context-match.ts";
+import type {OfflineContextEntry} from "./offline-context-schema.ts";
 
 /** Context already visible in the local terminal. No remote probe is needed. */
 export interface NextCommandContext {
@@ -10,6 +12,7 @@ export interface NextCommandContext {
   readonly cwd?: string;
   readonly host?: string;
   readonly recentBlocks: readonly string[];
+  readonly offlineEntries?: readonly OfflineContextEntry[];
   readonly feedback?: Readonly<Record<string, {accepted: number; dismissed: number}>>;
 }
 
@@ -539,6 +542,19 @@ export function suggestNextCommands(context: NextCommandContext): NextCommandSug
       if (comparableCommand.startsWith(comparablePrefix)) {
         addSuggestion(suggestions, candidate.command, candidate.reason, candidate.confidence);
       }
+    }
+  }
+
+  if (context.offlineEntries?.length) {
+    for (const candidate of matchOfflineContext(context.offlineEntries, {
+      shell,
+      host: context.host,
+      cwd: context.cwd,
+      promptLine: context.promptLine,
+      input: context.input,
+      recentBlocks: context.recentBlocks,
+    })) {
+      addSuggestion(suggestions, candidate.command, candidate.reason, candidate.confidence);
     }
   }
 

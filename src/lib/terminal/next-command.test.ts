@@ -1,5 +1,6 @@
 import {describe, expect, it} from "vitest";
 import {parsePromptLine, suggestNextCommands} from "./next-command.ts";
+import type {OfflineContextEntry} from "./offline-context-schema.ts";
 
 describe("parsePromptLine", () => {
   it("extracts host, cwd, and empty input from a unix prompt", () => {
@@ -532,5 +533,35 @@ describe("suggestNextCommands", () => {
     ]));
     const ranked = suggestNextCommands({recentBlocks: [], feedback});
     expect(ranked.every((item) => item.confidence >= 0 && item.confidence <= 1)).toBe(true);
+  });
+
+  it("merges imported host context without leaking it to another host", () => {
+    const imported: OfflineContextEntry = {
+      id: "api-triage",
+      scope: {host: "api-01"},
+      shell: "posix",
+      triggers: ["api error"],
+      command: "journalctl -u api.service --no-pager -n 100",
+      reason: "查看 api 服务最近日志",
+      risk: "read-only",
+      confidence: 0.9,
+    };
+    const api = suggestNextCommands({
+      host: "api-01",
+      shell: "posix",
+      recentBlocks: ["api error"],
+      offlineEntries: [imported],
+    });
+    expect(api[0]?.command).toBe(imported.command);
+    expect(api.length).toBeLessThanOrEqual(3);
+    expect(api.every((item) => item.source === "local" && item.risk === "read-only")).toBe(true);
+
+    const db = suggestNextCommands({
+      host: "db-01",
+      shell: "posix",
+      recentBlocks: ["api error"],
+      offlineEntries: [imported],
+    });
+    expect(db.some((item) => item.command === imported.command)).toBe(false);
   });
 });
