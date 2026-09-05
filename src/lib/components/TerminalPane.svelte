@@ -36,6 +36,7 @@
     import {extractBlockFirstLogicalLine, extractBlockTexts, extractBlocksText} from "../terminal/block-content.ts";
     import {redactCommandBlockTexts} from "../terminal/command-block-redaction.ts";
     import {setupTouchScroll} from "../terminal/touch-scroll.ts";
+    import {setupSoftKeyboardInset} from "../soft-keyboard-inset.ts";
     import {registerBracketedPasteProvider, unregisterBracketedPasteProvider} from "../terminal/bracketed-paste.ts";
     import {setupXtermIme229Workaround} from "../terminal/xterm-ime-229-workaround.ts";
     import {createReservedSessionAttempt} from "../terminal/reserved-session-attempt.ts";
@@ -107,13 +108,15 @@
         highlightDecorator?.setRules(rules);
     });
 
-    let {tabId, tabType, meta = {}}: {
+    let {tabId, tabType, meta = {}, onInitialConnectionFailure}: {
         tabId: string;
         tabType: app.TerminalTabType;
         meta: Record<string, string>;
+        onInitialConnectionFailure?: (tabId: string, error: unknown) => boolean;
     } = $props();
 
     let containerEl: HTMLDivElement;
+    let paneEl: HTMLDivElement; // the .term-outer root — soft-keyboard inset target
     let searchInputEl: HTMLInputElement;
 
     type AuthPromptData = { name: string; instructions: string; prompts: { prompt: string; echo: boolean }[] };
@@ -249,6 +252,18 @@
     let connectGeneration = 0;
     let destroyed = false;
     let disconnected = $state(false);
+    // Initial split panes are removed when their first connect attempt fails;
+    // reconnect attempts must never trigger that cleanup.
+    let initialConnection = true;
+    let initialConnectionFailureReported = false;
+    let initialConnectionFailureHandled = false;
+    function reportInitialConnectionFailure(error: unknown) {
+        if (!initialConnection || initialConnectionFailureReported || destroyed) return;
+        initialConnectionFailureReported = true;
+        initialConnectionFailureHandled = onInitialConnectionFailure?.(tabId, error) === true;
+    }
+    // `connectAndWire` crosses several awaits. The generation guards the whole
+    // component flow; ReservedSessionAttempt owns the finer Pending/Ready state.
     let telnetRemoteEcho = $state(false);
     // Telnet scripts are fetched into component memory by profile id. They must
     // never enter tab meta, which is cloned through localStorage for a new
@@ -1426,6 +1441,7 @@
                 terminal.write(`\x1b[31mSerial open failed: ${e}\x1b[0m\r\n`);
                 terminal.write("\x1b[90mPress any key to retry.\x1b[0m\r\n");
                 disconnected = true;
+                reportInitialConnectionFailure(e);
                 return false;
             }
             if (disconnected) {
@@ -1481,8 +1497,9 @@
                 // localized sentence ("Telnet connect to {peer} failed: {err}");
                 // a hardcoded prefix would just duplicate it in English.
                 terminal.write(`\x1b[31m${errMsg(e)}\x1b[0m\r\n`);
-                terminal.write("\x1b[90mPress any key to retry.\x1b[0m\r\n");
+                terminal.write("\x1b[90mPress any key to reconnect.\x1b[0m\r\n");
                 disconnected = true;
+                reportInitialConnectionFailure(e);
                 return false;
             }
             // A peer can close after emitting the close event but before the
@@ -1521,6 +1538,7 @@
                 }
                 terminal.write(`\x1b[31mLaunch failed: ${e}\x1b[0m\r\n`);
                 disconnected = true;
+                reportInitialConnectionFailure(e);
                 return false;
             }
             if (disconnected) {
@@ -1555,6 +1573,7 @@
                 terminal.write(`\x1b[31mConnection failed: ${e}\x1b[0m\r\n`);
                 terminal.write("\x1b[90mPress any key to reconnect.\x1b[0m\r\n");
                 disconnected = true;
+                reportInitialConnectionFailure(e);
                 return false;
             }
             clearSshPromptUi();
@@ -1634,6 +1653,7 @@
     }
 
     async function reconnect() {
+        initialConnection = false;
         terminal.write("\r\n\x1b[36mReconnecting ...\x1b[0m\r\n");
         const generation = connectGeneration + 1;
         const ok = await connectAndWire();
@@ -1784,10 +1804,19 @@
         window.visualViewport?.addEventListener("scroll", onViewportChange, { passive: true });
         window.visualViewport?.addEventListener("resize", onViewportChange, { passive: true });
         containerEl.addEventListener("pointerdown", onTerminalTouchDown, { capture: true, passive: true });
+        // iOS overlays the keyboard instead of resizing the webview: pad the
+        // pane up onto the visible viewport so the keybar rides on top of the
+        // keyboard — up with the open animation, down with the close (settle
+        // mode inside setupSoftKeyboardInset). Registered after our own
+        // listeners so the helper pin runs before the padding write. No-op on
+        // Android, where the webview already resized; the pane's
+        // ResizeObserver refits the terminal as the pane shrinks.
+        const insetCleanup = setupSoftKeyboardInset(paneEl, helper);
 
         return () => {
             if (scrollResetRaf) cancelAnimationFrame(scrollResetRaf);
             if (helperPinRaf) cancelAnimationFrame(helperPinRaf);
+            insetCleanup();
             if (originalHelperStyle === null) helper.removeAttribute("style");
             else helper.setAttribute("style", originalHelperStyle);
             helper.removeEventListener("focus", onFocus);
@@ -1807,8 +1836,20 @@
 
     let unsubscribeTheme: (() => void) | null = null;
     let unsubscribeFont: (() => void) | null = null;
+    let unsubscribeGpu: (() => void) | null = null;
+    // Current WebGL renderer addon, if any. Disposing it reverts xterm to
+    // the DOM renderer; null means we are on the DOM renderer right now.
+    let webglAddon: WebglAddon | null = null;
+
+    function disposeWebgl(): void {
+        webglAddon?.dispose();
+        webglAddon = null;
+    }
 
     onMount(async () => {
+        const IMAGE_STORAGE_LIMIT_MB = app.isMobile ? 32 : 128;
+        const IMAGE_PIXEL_LIMIT = app.isMobile ? 4_000_000 : 16_000_000;
+
         terminal = new Terminal({
             cursorBlink: true,
             scrollback: TERMINAL_SCROLLBACK_LINES,
@@ -1843,30 +1884,36 @@
             sixelSupport: true,
             sixelScrolling: true,
             iipSupport: true,
-            storageLimit: app.isMobile ? 32 : 128,
-            pixelLimit: app.isMobile ? 4_000_000 : 16_000_000,
+            storageLimit: IMAGE_STORAGE_LIMIT_MB,
+            pixelLimit: IMAGE_PIXEL_LIMIT,
         }));
         terminal.open(containerEl);
         // GPU renderer: the default DomRenderer rebuilds DOM spans per paint
         // and drowns on flood output. WebGL draws from a texture atlas — the
         // "GPU acceleration" every modern terminal ships. Any failure (old
         // GPU, RDP, WebView without WebGL2) falls back to the DomRenderer.
-        // NOT on mobile: WebGL paints glyphs into a canvas, leaving no DOM
-        // text — iOS's native long-press selection (the blue handles) has
-        // nothing to grab. Mobile keeps the DOM renderer (selection beats
-        // paint throughput; the output feeder already bounds flood pacing).
-        if (!app.isMobile) {
+        // The user toggle decides (theme.termGpuRender, live): it defaults
+        // off on mobile because WebGL paints glyphs into a canvas, leaving
+        // no DOM text — iOS's native long-press selection (the blue handles)
+        // has nothing to grab. Toggling mid-session swaps renderers in place.
+        unsubscribeGpu = theme.registerXtermGpuListener(on => {
+            if (!on) {
+                disposeWebgl();
+                return;
+            }
+            if (webglAddon) return;
             try {
-                const webglAddon = new WebglAddon();
-                webglAddon.onContextLoss(() => {
+                const addon = new WebglAddon();
+                addon.onContextLoss(() => {
                     console.warn("[terminal] WebGL context lost — falling back to DOM renderer");
-                    webglAddon.dispose();
+                    disposeWebgl();
                 });
-                terminal.loadAddon(webglAddon);
+                terminal.loadAddon(addon);
+                webglAddon = addon;
             } catch (e) {
                 console.warn("[terminal] WebGL renderer unavailable, using DOM:", e);
             }
-        }
+        });
         ime229WorkaroundCleanup = setupXtermIme229Workaround({
             terminal,
             host: containerEl,
@@ -1922,7 +1969,6 @@
         // AI-driven pastes the same way xterm wraps manual ones. See
         // bracketed-paste.ts.
         registerBracketedPasteProvider(tabId, () => terminal?.modes.bracketedPasteMode ?? false);
-
         // Copy-on-select (left-button mouseup) + right-click action (capture
         // phase — required so preventDefault can suppress the native menu before
         // xterm/WebView handle the event). See onSelectMouseUp / onTerminalContextMenu.
@@ -2069,8 +2115,18 @@
         // Connect
         if (destroyed) return;
         const generation = connectGeneration + 1;
-        await connectAndWire();
+        const initialOk = await connectAndWire();
         if (destroyed || connectGeneration !== generation) return;
+        if (!initialOk) {
+            if (!initialConnectionFailureReported) {
+                reportInitialConnectionFailure(new Error("Initial terminal connection failed"));
+            }
+            initialConnection = false;
+            if (initialConnectionFailureHandled) return;
+            setupReconnect();
+            return;
+        }
+        initialConnection = false;
         setupReconnect();
 
         terminal.onTitleChange((title) => {
@@ -2092,6 +2148,17 @@
             if (width > 0 && height > 0) fitTerminal();
         });
         resizeObs.observe(containerEl);
+    });
+
+    // A missing session id is ambiguous during initial connect and reconnect.
+    // Publish the pane's explicit lifecycle state for the split header.
+    $effect(() => {
+        const connectionStatus: app.TerminalConnectionStatus = disconnected
+            ? "disconnected"
+            : sessionId
+                ? "connected"
+                : "connecting";
+        untrack(() => app.setTerminalConnectionStatus(tabId, connectionStatus));
     });
 
     // Register session in global registry for broadcast
@@ -2179,6 +2246,8 @@
         reservedSessionAttempt.destroy();
         unsubscribeTheme?.();
         unsubscribeFont?.();
+        unsubscribeGpu?.();
+        disposeWebgl();
         window.removeEventListener("mousedown", onWindowMouseDown);
         window.removeEventListener("keydown", onWindowKeyDown);
         containerEl?.removeEventListener("mouseup", onSelectMouseUp);
@@ -2224,12 +2293,13 @@
         app.unregisterTerminalControls(tabId);
         unregisterBracketedPasteProvider(tabId);
         app.unregisterSession(tabId);
+        app.clearTerminalConnectionStatus(tabId);
         highlightDecorator?.dispose();
         terminal?.dispose();
     });
 </script>
 
-<div class="term-outer">
+<div class="term-outer" bind:this={paneEl}>
     {#if showSearch}
         <div class="search-bar">
             <input

@@ -9,7 +9,7 @@
   import { isIOS } from "../stores/app.svelte.ts";
   import WelcomeScreen from "./WelcomeScreen.svelte";
 
-  const REPO = "shihuili1218/rssh";
+  const REPO = "rssh-org/rssh";
   const REPO_URL = `https://github.com/${REPO}`;
   const ISSUES_URL = `${REPO_URL}/issues`;
   const LICENSE_URL = `${REPO_URL}/blob/main/LICENSE`;
@@ -134,7 +134,7 @@
   .app-version {
     font-size: 13px;
     color: var(--text-dim);
-    font-family: monospace;
+    font-family: var(--term-font);
   }
   .links {
     display: flex;
@@ -162,7 +162,7 @@
   .link-row:active { box-shadow: var(--pressed); }
   .link-label { font-weight: 600; }
   .link-url {
-    font-family: monospace;
+    font-family: var(--term-font);
     font-size: 12px;
     color: var(--text-dim);
     overflow: hidden;

@@ -6,6 +6,7 @@
   import { toast } from "../stores/toast.svelte.ts";
   import { t, errMsg } from "../i18n/index.svelte.ts";
   import HighlightRuleForm from "./HighlightRuleForm.svelte";
+  import AppIcon from "./AppIcon.svelte";
 
   const EMPTY_RULE: HighlightRule = {
     keyword: "",
@@ -139,8 +140,22 @@
             <input type="checkbox" checked={h.enabled} onchange={() => toggleEnabled(h)} />
             <span class="slider"></span>
           </label>
-          <button class="btn btn-sm" onclick={() => startEdit(h)}>{t("common.edit")}</button>
-          <button class="btn btn-sm btn-danger" onclick={() => remove(h.keyword)}>{t("common.delete")}</button>
+          <button
+            class="btn btn-sm btn-icon"
+            title={t("common.edit")}
+            aria-label={`${t("common.edit")} ${displayTitle(h)}`}
+            onclick={() => startEdit(h)}
+          >
+            <AppIcon name="edit" size={16} />
+          </button>
+          <button
+            class="btn btn-sm btn-icon btn-danger"
+            title={t("common.delete")}
+            aria-label={`${t("common.delete")} ${displayTitle(h)}`}
+            onclick={() => remove(h.keyword)}
+          >
+            <AppIcon name="trash" size={16} />
+          </button>
         </div>
       </div>
     {/if}
@@ -165,11 +180,11 @@
   .item-info.dimmed { opacity: 0.45; }
   .item-text { min-width: 0; }
   .item-name {
-    font-weight: 600; font-size: 14px; font-family: monospace;
+    font-weight: 600; font-size: 14px; font-family: var(--term-font);
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   }
   .item-meta { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-  .item-sub { font-size: 12px; color: var(--text-sub); font-family: monospace; }
+  .item-sub { font-size: 12px; color: var(--text-sub); font-family: var(--term-font); }
   .item-actions { display: flex; align-items: center; gap: 10px; flex-shrink: 0; }
   .color-swatch {
     width: 20px; height: 20px; border-radius: 4px; flex-shrink: 0;
@@ -179,7 +194,7 @@
   .tag {
     font-size: 10px; font-weight: 600; color: var(--text-dim);
     border: 1px solid var(--divider); border-radius: 3px;
-    padding: 1px 4px; font-family: monospace;
+    padding: 1px 4px; font-family: var(--term-font);
   }
   .empty { text-align: center; color: var(--text-dim); padding: 32px; }
 </style>

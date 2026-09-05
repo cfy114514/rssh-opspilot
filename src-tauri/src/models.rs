@@ -32,7 +32,7 @@ pub struct Profile {
     pub port: u16,
     /// DB 列声明 `TEXT NOT NULL DEFAULT ''`，model 类型对齐成 String。
     /// **应用层不变量**：Profile.credential_id 永远是一个真实 Credential 的 id。
-    /// - 写入入口（`add.rs`/`edit.rs`/`ProfileEditor.svelte`/`do_import_ssh_entries`）
+    /// - 写入入口（`add.rs`/`edit.rs`/`ProfileEditor.svelte`）
     ///   强制必填，从源头保证不变量。
     /// - 读取端（`open.rs`/`ssh_builder.rs`/`forward.rs`/`session.rs`）直接
     ///   `credential::get(&id)`，引用错就 fail-fast 报 `*_cred_not_found`，
@@ -514,6 +514,39 @@ pub struct HighlightRule {
 pub struct Snippet {
     pub name: String,
     pub command: String,
+}
+
+// --- Plugin ---
+
+/// A third-party plugin package installed on this machine. `id` doubles as the
+/// directory name under `<data_dir>/plugins/`, so it must stay a slug.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Plugin {
+    pub id: String,
+    pub name: String,
+    pub version: String,
+    #[serde(default)]
+    pub description: String,
+    #[serde(default)]
+    pub author: String,
+    /// Which host region the plugin UI mounts in: "side" | "strip".
+    pub area: String,
+    /// Package-relative preview document ("" = none).
+    #[serde(default)]
+    pub preview: String,
+    pub enabled: bool,
+    pub installed_at: i64,
+    /// Position within its area; the manager page rewrites this on reorder.
+    #[serde(default)]
+    pub sort_order: i64,
+}
+
+/// One-shot remote command result handed to a plugin iframe via the bridge.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PluginExecResult {
+    pub stdout: String,
+    pub stderr: String,
+    pub exit_code: Option<i32>,
 }
 
 // --- Session Recording ---

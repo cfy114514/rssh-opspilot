@@ -7,6 +7,7 @@ pub mod forward;
 pub mod group;
 pub mod lifecycle;
 pub mod opspilot_memory;
+pub mod plugin;
 pub mod profile;
 #[cfg(desktop)]
 pub mod pty;

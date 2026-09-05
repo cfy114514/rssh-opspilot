@@ -31,6 +31,7 @@ import {
   type TermPaletteRef,
 } from "./term-palettes.ts";
 import { composeTermFontStack } from "./term-font.ts";
+import { isMobile } from "../platform.ts";
 
 const SETTING_KEY_PALETTE        = "theme.palette";
 const SETTING_KEY_SHAPE          = "theme.shape";
@@ -39,6 +40,7 @@ const SETTING_KEY_TERM           = "theme.term-palette";
 const SETTING_KEY_TERM_BG_FOLLOW = "theme.term-bg-follow";
 const SETTING_KEY_TERM_FONT      = "theme.term-font";
 const SETTING_KEY_TERM_FONT_SIZE = "theme.term-font-size";
+const SETTING_KEY_TERM_GPU       = "theme.term-gpu-render";
 
 let _paletteId = $state<PaletteId>(DEFAULT_PALETTE_ID);
 
@@ -227,8 +229,17 @@ export function termFont(): string { return _termFont; }
 export function termFontSize(): number { return _termFontSize; }
 export function currentTermFontStack(): string { return composeTermFontStack(_termFont); }
 
+/** Expose the terminal font stack as a :root CSS variable. Monospace UI
+ *  spots (paths, code snippets, key hints) consume it so they always match
+ *  the terminal instead of the OS locale's generic monospace (SimSun on
+ *  zh-CN Windows). Written at init and on every font change. */
+function writeTermFontVar(): void {
+  document.documentElement.style.setProperty("--term-font", currentTermFontStack());
+}
+
 export async function setTermFont(name: string): Promise<void> {
   _termFont = name;
+  writeTermFontVar();
   notifyXtermFonts();
   try {
     await invoke("set_setting", { key: SETTING_KEY_TERM_FONT, value: name });
@@ -270,6 +281,43 @@ export function registerXtermFontListener(fn: XtermFontListener): () => void {
 function notifyXtermFonts(): void {
   const font = currentXtermFont();
   for (const fn of _xtermFontListeners) fn(font);
+}
+
+/* ───────────────────────────────────────────────────────────────
+   Terminal GPU rendering — whether xterm uses the WebGL addon or
+   the DOM renderer. Desktop default on (paint throughput); mobile
+   default off (WebGL paints glyphs into a canvas, leaving no DOM
+   text for iOS's native long-press selection). The user toggle is
+   the single authority — including on mobile. Applies live: panes
+   register a listener that loads/disposes the addon.
+   ─────────────────────────────────────────────────────────────── */
+
+let _termGpuRender = $state<boolean>(!isMobile);
+
+export function termGpuRender(): boolean { return _termGpuRender; }
+
+export async function setTermGpuRender(on: boolean): Promise<void> {
+  _termGpuRender = on;
+  notifyXtermGpu();
+  try {
+    await invoke("set_setting", { key: SETTING_KEY_TERM_GPU, value: String(on) });
+  } catch {
+    // Persistence failure is non-fatal.
+  }
+}
+
+type XtermGpuListener = (on: boolean) => void;
+const _xtermGpuListeners = new Set<XtermGpuListener>();
+
+/** Mirrors registerXtermFontListener: fires immediately + on every change. */
+export function registerXtermGpuListener(fn: XtermGpuListener): () => void {
+  _xtermGpuListeners.add(fn);
+  fn(_termGpuRender);
+  return () => { _xtermGpuListeners.delete(fn); };
+}
+
+function notifyXtermGpu(): void {
+  for (const fn of _xtermGpuListeners) fn(_termGpuRender);
 }
 
 /* ───────────────────────────────────────────────────────────────
@@ -375,7 +423,7 @@ function isShapeId(v: string | null | undefined): v is ShapeId {
  * Loads palette + shape + density in parallel — all are independent.
  */
 export async function init(): Promise<void> {
-  const [palette, shape, density, termRaw, termBgFollow, termFontRaw, termFontSizeRaw] = await Promise.all([
+  const [palette, shape, density, termRaw, termBgFollow, termFontRaw, termFontSizeRaw, termGpuRaw] = await Promise.all([
     invoke<string | null>("get_setting", { key: SETTING_KEY_PALETTE        }).catch(() => null),
     invoke<string | null>("get_setting", { key: SETTING_KEY_SHAPE          }).catch(() => null),
     invoke<string | null>("get_setting", { key: SETTING_KEY_DENSITY        }).catch(() => null),
@@ -383,6 +431,7 @@ export async function init(): Promise<void> {
     invoke<string | null>("get_setting", { key: SETTING_KEY_TERM_BG_FOLLOW }).catch(() => null),
     invoke<string | null>("get_setting", { key: SETTING_KEY_TERM_FONT      }).catch(() => null),
     invoke<string | null>("get_setting", { key: SETTING_KEY_TERM_FONT_SIZE }).catch(() => null),
+    invoke<string | null>("get_setting", { key: SETTING_KEY_TERM_GPU       }).catch(() => null),
   ]);
   if (palette && PALETTES.some((p) => p.id === palette)) {
     _paletteId = palette as PaletteId;
@@ -407,12 +456,20 @@ export async function init(): Promise<void> {
   if (termBgFollow === "false") _termBgFollowsTheme = false;
   if (termFontRaw) _termFont = termFontRaw;
   if (termFontSizeRaw) _termFontSize = clampFontSize(parseInt(termFontSizeRaw, 10));
+  // Explicit persisted value wins; absence keeps the platform default
+  // (desktop on / mobile off).
+  if (termGpuRaw === "true") _termGpuRender = true;
+  else if (termGpuRaw === "false") _termGpuRender = false;
   apply(paletteById(_paletteId));
   applyShape(_shapeId);
   applyDensity(_densityId);
+  writeTermFontVar();
   // init() is not awaited before mount (see main.ts), so a terminal may
   // register its font listener before this resolves — with the default stack.
   // Notify now so any already-mounted terminal picks up the persisted font.
   // Mirrors apply()'s notifyXterms() for the palette.
   notifyXtermFonts();
+  // Same late-mount race for the GPU toggle: a pane that mounted with the
+  // platform default may need to (un)load its WebGL addon.
+  notifyXtermGpu();
 }

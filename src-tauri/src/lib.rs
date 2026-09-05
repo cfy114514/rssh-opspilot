@@ -82,35 +82,6 @@ pub fn run() {
                     let state = window.state::<AppState>();
                     // Close only sessions belonging to this window.
                     commands::lifecycle::close_window_sessions(&state, window.label());
-                    // Drop it from any move-together group (survivors stay bound).
-                    state
-                        .window_groups
-                        .lock()
-                        .unwrap_or_else(|e| e.into_inner())
-                        .remove(window.label());
-                }
-                // Live window binding: mirror this window's drag onto its group
-                // siblings. Binding SUSPENDS at the OS boundary — a window
-                // animating into fullscreen (its own Space on macOS) or
-                // minimizing fires a Moved we must not propagate.
-                #[cfg(desktop)]
-                tauri::WindowEvent::Moved(pos) => {
-                    if window.is_fullscreen().unwrap_or(false)
-                        || window.is_minimized().unwrap_or(false)
-                    {
-                        return;
-                    }
-                    let moves = window
-                        .state::<AppState>()
-                        .window_groups
-                        .lock()
-                        .unwrap_or_else(|e| e.into_inner())
-                        .moved(window.label(), (pos.x, pos.y), std::time::Instant::now());
-                    for (label, (x, y)) in moves {
-                        if let Some(w) = window.get_webview_window(&label) {
-                            let _ = w.set_position(tauri::PhysicalPosition::new(x, y));
-                        }
-                    }
                 }
                 _ => {}
             }
@@ -159,8 +130,6 @@ pub fn run() {
                 passphrase_waiters: Mutex::new(HashMap::new()),
                 host_key_waiters: Mutex::new(HashMap::new()),
                 passphrase_cache: Mutex::new(HashMap::new()),
-                #[cfg(desktop)]
-                window_groups: Mutex::new(commands::window::WindowGroups::default()),
                 ai_sessions: Mutex::new(HashMap::new()),
                 ai_session_owners: Arc::new(Mutex::new(HashMap::new())),
                 ai_remote_shell_cache: Mutex::new(HashMap::new()),
@@ -181,10 +150,7 @@ pub fn run() {
             commands::profile::create_credential,
             commands::profile::update_credential,
             commands::profile::delete_credential,
-            commands::profile::import_ssh_config,
-            commands::profile::read_ssh_config_default,
             commands::profile::read_default_key_file,
-            commands::profile::import_ssh_entries,
             // groups
             commands::group::list_groups,
             commands::group::create_group,
@@ -222,6 +188,14 @@ pub fn run() {
             commands::settings::read_recording,
             commands::settings::secret_backend,
             commands::settings::list_fonts,
+            // plugins
+            commands::plugin::plugins_root,
+            commands::plugin::install_plugin,
+            commands::plugin::list_plugins,
+            commands::plugin::set_plugin_enabled,
+            commands::plugin::set_plugin_order,
+            commands::plugin::uninstall_plugin,
+            commands::plugin::plugin_exec,
             commands::command_block::command_block_list_redact_rules,
             commands::command_block::command_block_save_redact_rule,
             commands::command_block::command_block_delete_redact_rule,
@@ -388,6 +362,9 @@ pub fn run() {
             ai::commands::ai_settings_get,
             ai::commands::ai_settings_set,
             ai::commands::ai_list_models,
+            ai::commands::ai_provider_list,
+            ai::commands::ai_provider_save,
+            ai::commands::ai_provider_delete,
         ])
         .run(tauri::generate_context!())
         .expect("RSSH startup failed");

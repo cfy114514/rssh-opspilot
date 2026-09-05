@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import * as ai from "../ai/store.svelte.ts";
-import { errMsg } from "../i18n/index.svelte.ts";
+import * as pluginStore from "../plugins/store.svelte.ts";
+import { errMsg, t } from "../i18n/index.svelte.ts";
 import { isIOS, isMobile } from "../platform.ts";
 import type {
   CommandBlockRedactionRule as RedactionRule,
@@ -15,6 +16,9 @@ import type { ViewportSnapshot } from "../terminal/viewport-snapshot.ts";
 import { toast } from "./toast.svelte.ts";
 
 export type { CommandBlockSplitMode } from "../terminal/command-blocks.ts";
+import { addSplit, collectLeafIds, leaf, normalizeRatio, removeLeaf } from "../terminal/layout.ts";
+import type { SplitDirection, TerminalLayout } from "../terminal/layout.ts";
+import { createSidePanelState } from "./panel-state.svelte.ts";
 
 /* ═══════════════════════════════════════════════════════
    Platform
@@ -27,6 +31,7 @@ export { isIOS, isMobile };
 export type TabType = "home" | "ssh" | "local" | "serial" | "telnet" | "docker_exec" | "kubectl_exec" | "forward" | "edit";
 /** Tab types that render a TerminalPane (byte-stream terminals). */
 export type TerminalTabType = Exclude<TabType, "home" | "forward" | "edit">;
+export type TerminalConnectionStatus = "connecting" | "connected" | "disconnected";
 export function isTerminalTabType(type: TabType): type is TerminalTabType {
   return type === "ssh" || type === "local" || type === "serial" || type === "telnet"
     || type === "docker_exec" || type === "kubectl_exec";
@@ -40,6 +45,8 @@ export interface Tab {
   type: TabType;
   label: string;
   meta?: Record<string, string>;
+  workspaceId?: string;
+  paneOf?: string;
 }
 
 /** Settings sub-pages (rendered inside the settings tab) */
@@ -54,7 +61,6 @@ export type SettingsPage =
   | "highlights"
   | "sync"
   | "import-export"
-  | "import-ssh-config"
   | "recording-settings"
   | "playback"
   | "shell-settings"
@@ -65,6 +71,7 @@ export type SettingsPage =
   | "shortcuts"
   | "appearance"
   | "ai"
+  | "plugins"
   | "about";
 
 export interface Group {
@@ -177,8 +184,13 @@ export interface RemoteEntry {
 /* ═══════════════════════════════════════════════════════
    Reactive state
    ═══════════════════════════════════════════════════════ */
-let _tabs = $state<Tab[]>([{ id: "home", type: "home", label: "Home" }]);
+let _tabs = $state<Tab[]>([{ id: "home", type: "home", label: "" }]);
 let _activeTabId = $state("home");
+let _activeWorkspaceId = $state("home");
+let _activePaneId = $state("home");
+let _focusedPaneByWorkspace = $state<Record<string, string>>({});
+let _layoutByWorkspace = $state<Record<string, TerminalLayout | null>>({});
+let _terminalConnectionStatusByTab = $state<Record<string, TerminalConnectionStatus>>({});
 let _settingsActive = $state(false);
 let _settingsPage = $state<SettingsPage>("menu");
 let _editingId = $state<string | null>(null);
@@ -188,23 +200,14 @@ let _connectionEditorIntent = $state<ConnectionEditorIntent>({ mode: "create", k
    SFTP 共用对应 tab 的 SSH 连接；切 tab 不影响其他 tab 已打开的 SFTP；
    新开 tab 不自动开 SFTP——每个 tab 手动开。
    (老的全局 _sftpOpen 已废，那是 fullscreen overlay 时代的产物。) */
-let _sftpOpenByTab = $state<Record<string, boolean>>({});
 const sftpPanelWidthKey = "sftp-panel-width";
 const sftpPanelMinWidth = 280;
-
-function loadSftpPanelWidth(): number | null {
-  try {
-    const raw = localStorage.getItem(sftpPanelWidthKey);
-    if (raw === null) return null;
-    const width = Number.parseInt(raw, 10);
-    return Number.isFinite(width) && width >= sftpPanelMinWidth ? width : null;
-  } catch {
-    return null;
-  }
-}
-
-let _sftpPanelDefaultWidth = loadSftpPanelWidth();
-let _sftpPanelWidthByTab = $state<Record<string, number | null>>({});
+/* SFTP per-tab panel state — the shared side-panel skeleton (open flags +
+   widths + persisted committed default). Opening stays ssh-gated (openSftp). */
+const sftpPanel = createSidePanelState({
+  minWidth: sftpPanelMinWidth,
+  storageKey: sftpPanelWidthKey,
+});
 /* Transfers popover: an overlay, no longer a sibling route of Settings.
    State is independent — switching tabs / opening Settings does not close it;
    the user must dismiss explicitly (X / click outside / Esc / re-click entry).
@@ -304,59 +307,220 @@ export function connectionUpdateId(): string | null {
   return _connectionEditorIntent.mode === "edit" ? _connectionEditorIntent.sourceId : null;
 }
 /** 当前活跃 tab 的 SFTP 是否打开（toolbar / Esc / × 按钮等用这个）。 */
-export function sftpOpen() { return !!_sftpOpenByTab[_activeTabId]; }
+export function sftpOpen() { return sftpPanel.isOpen(_activeTabId); }
 /** 任意 tab 是否查询；用 tab id 显式问。 */
-export function sftpOpenForTab(tabId: string) { return !!_sftpOpenByTab[tabId]; }
+export function sftpOpenForTab(tabId: string) { return sftpPanel.isOpen(tabId); }
 /** 模板 {#each} 遍历所有"开了 SFTP"的 tab 用——保持 SftpBrowser 实例存活以便切回时 cwd 不丢。 */
-export function tabsWithSftp(): Tab[] { return _tabs.filter(t => _sftpOpenByTab[t.id]); }
-export function sftpPanelWidthForTab(tabId: string): number | null {
-  return _sftpPanelWidthByTab[tabId] ?? null;
-}
+export function tabsWithSftp(): Tab[] { return _tabs.filter(t => sftpPanel.isOpen(t.id)); }
+export function sftpPanelWidthForTab(tabId: string): number | null { return sftpPanel.width(tabId); }
 export function setSftpPanelWidth(tabId: string, width: number | null) {
-  _sftpPanelWidthByTab[tabId] = width;
+  sftpPanel.setWidth(tabId, width);
 }
 export function commitSftpPanelWidth(tabId: string) {
-  if (!Object.prototype.hasOwnProperty.call(_sftpPanelWidthByTab, tabId)) return;
-  const width = _sftpPanelWidthByTab[tabId] ?? null;
-  _sftpPanelDefaultWidth = width;
-  if (width === null) {
-    safeRemoveItem(sftpPanelWidthKey);
-  } else {
-    safeSetItem(sftpPanelWidthKey, String(width));
-  }
+  sftpPanel.commitWidth(tabId);
 }
 export function downloadsActive() { return _downloadsActive; }
 export function pinnedProfileIds() { return _pinnedProfileIds; }
 export function recentHomeItemIds() { return _recentHomeItemIds; }
 export function terminalTitle(tabId: string) { return _terminalTitles[tabId]; }
+export function activeWorkspaceId() { return _activeWorkspaceId; }
+export function activePaneId() { return _activePaneId; }
+export function workspaceTabs(): Tab[] {
+  return _tabs.filter((tab) => tab.type !== "home" && !tab.paneOf);
+}
+
+export function tabLabel(tab: Tab): string {
+  return tab.id === "home" ? t("tab.home") : tab.label;
+}
+export function layoutForWorkspace(workspaceId: string): TerminalLayout | null {
+  return _layoutByWorkspace[workspaceId] ?? null;
+}
+export function paneIdsForWorkspace(workspaceId: string): string[] {
+  const layout = layoutForWorkspace(workspaceId);
+  return layout ? collectLeafIds(layout) : [];
+}
+export function isTerminalWorkspace(workspaceId: string): boolean {
+  const root = _tabs.find((tab) => tab.id === workspaceId && !tab.paneOf);
+  return !!root && isTerminalTabType(root.type);
+}
+export function ensureWorkspaceLayout(rootId: string): TerminalLayout | null {
+  if (!isTerminalWorkspace(rootId)) return null;
+  if (!Object.prototype.hasOwnProperty.call(_layoutByWorkspace, rootId) || !_layoutByWorkspace[rootId]) {
+    _layoutByWorkspace[rootId] = leaf(rootId);
+  }
+  return _layoutByWorkspace[rootId] ?? null;
+}
+export function terminalLayout(): TerminalLayout | null {
+  return layoutForWorkspace(_activeWorkspaceId);
+}
+
+export function setActiveWorkspace(id: string) {
+  const tab = _tabs.find((candidate) => candidate.id === id && !candidate.paneOf);
+  if (!tab) return;
+  _activeWorkspaceId = id;
+  const focusedPaneId = _focusedPaneByWorkspace[id];
+  const paneId = focusedPaneId && paneIdsForWorkspace(id).includes(focusedPaneId)
+    ? focusedPaneId
+    : id;
+  _activePaneId = paneId;
+  _activeTabId = paneId;
+  _settingsActive = false;
+  const idx = _tabs.findIndex((candidate) => candidate.id === id);
+  if (_tabMru && idx > 1) moveTab(idx, 1);
+}
+
+export function setActivePane(id: string) {
+  const tab = _tabs.find((candidate) => candidate.id === id);
+  if (!tab) return;
+  const workspaceId = tab.paneOf ? tab.workspaceId : tab.id;
+  if (!workspaceId || workspaceId !== _activeWorkspaceId) return;
+  if (tab.paneOf && !paneIdsForWorkspace(workspaceId).includes(id)) return;
+  _activePaneId = id;
+  _activeTabId = id;
+  _focusedPaneByWorkspace[workspaceId] = id;
+  _settingsActive = false;
+}
+
+export type PaneSide = "left" | "right" | "top" | "bottom";
+
+function directionForSide(side: PaneSide): SplitDirection {
+  return side === "top" || side === "bottom" ? "vertical" : "horizontal";
+}
+
+function swapInsertedPane(layout: TerminalLayout, targetId: string, newId: string): TerminalLayout {
+  if (layout.kind === "leaf") return layout;
+  if (layout.first.kind === "leaf" && layout.first.tabId === newId && collectLeafIds(layout.second).includes(targetId)) {
+    return { ...layout, first: layout.second, second: layout.first };
+  }
+  const first = swapInsertedPane(layout.first, targetId, newId);
+  if (first !== layout.first) return { ...layout, first };
+  const second = swapInsertedPane(layout.second, targetId, newId);
+  return second === layout.second ? layout : { ...layout, second };
+}
+
+function resizeLayoutNode(layout: TerminalLayout, path: readonly number[], index: number, ratio: number): TerminalLayout {
+  if (index === path.length) {
+    return layout.kind === "split" ? { ...layout, ratio: normalizeRatio(ratio) } : layout;
+  }
+  if (layout.kind !== "split") return layout;
+  const branch = path[index];
+  if (branch !== 0 && branch !== 1) return layout;
+  if (branch === 0) {
+    const first = resizeLayoutNode(layout.first, path, index + 1, ratio);
+    return first === layout.first ? layout : { ...layout, first };
+  }
+  const second = resizeLayoutNode(layout.second, path, index + 1, ratio);
+  return second === layout.second ? layout : { ...layout, second };
+}
+
+export function resizeLayoutPath(workspaceId: string, path: readonly number[], ratio: number) {
+  const layout = layoutForWorkspace(workspaceId);
+  if (!layout) return;
+  const next = resizeLayoutNode(layout, path, 0, ratio);
+  if (next !== layout) _layoutByWorkspace[workspaceId] = next;
+}
+
+export function addPane(workspaceId: string, side: PaneSide, tab: Tab): string | null {
+  const root = _tabs.find((candidate) => candidate.id === workspaceId && !candidate.paneOf);
+  if (!root || !isTerminalTabType(root.type) || root.type === "serial" || !isTerminalTabType(tab.type) || tab.type === "serial") return null;
+  if (_tabs.some((candidate) => candidate.id === tab.id)) return null;
+  const layout = ensureWorkspaceLayout(workspaceId);
+  if (!layout) return null;
+  const targetId = _activeWorkspaceId === workspaceId && paneIdsForWorkspace(workspaceId).includes(_activePaneId)
+    ? _activePaneId
+    : workspaceId;
+  let nextLayout = addSplit(layout, targetId, tab.id, directionForSide(side), 0.5);
+  if (side === "right" || side === "bottom") {
+    nextLayout = swapInsertedPane(nextLayout, targetId, tab.id);
+  }
+  if (nextLayout === layout) return null;
+
+  const { workspaceId: _workspaceId, paneOf: _paneOf, ...tabWithoutPaneMetadata } = tab;
+  const pane: Tab = { ...tabWithoutPaneMetadata, workspaceId, paneOf: workspaceId };
+  _layoutByWorkspace[workspaceId] = nextLayout;
+  ai.activateTab(pane.id);
+  if (pane.type === "ssh") sftpPanel.seedWidth(pane.id);
+  _tabs.push(pane);
+  // Split view takes over the terminal region — plugin panels close everywhere.
+  pluginStore.closeAllPanels();
+  setActiveWorkspace(workspaceId);
+  setActivePane(pane.id);
+  return pane.id;
+}
+
+function disposeTabResources(id: string) {
+  delete _terminalTitles[id];
+  delete _terminalConnectionStatusByTab[id];
+  sftpPanel.clearTab(id);
+  pluginStore.disposeTab(id);
+  ai.disposeTab(id).catch((error) => {
+    console.warn("[ai] dispose on tab close:", error);
+    toast.error(errMsg(error));
+  });
+}
+
+export function closePane(id: string) {
+  const pane = _tabs.find((tab) => tab.id === id);
+  if (!pane?.paneOf || !pane.workspaceId) return;
+  const layout = layoutForWorkspace(pane.workspaceId);
+  if (!layout || !paneIdsForWorkspace(pane.workspaceId).includes(id)) return;
+  const nextLayout = removeLeaf(layout, id);
+  if (!nextLayout) return;
+  const wasActive = _activePaneId === id;
+  _layoutByWorkspace[pane.workspaceId] = nextLayout;
+  _tabs = _tabs.filter((tab) => tab.id !== id);
+  disposeTabResources(id);
+  if (_focusedPaneByWorkspace[pane.workspaceId] === id) {
+    _focusedPaneByWorkspace[pane.workspaceId] = collectLeafIds(nextLayout)[0] ?? pane.workspaceId;
+  }
+  if (wasActive) {
+    const nextPaneId = _focusedPaneByWorkspace[pane.workspaceId];
+    _activePaneId = nextPaneId;
+    _activeTabId = nextPaneId;
+  }
+}
+
 
 /* ─── Tab Operations ─── */
 export function setActiveTab(id: string) {
-  _activeTabId = id;
-  _settingsActive = false;
-  // MRU (when enabled): bring the just-focused session tab to the front of the
-  // session region (index 1, right after the fixed home tab). Reuses the
-  // drag-reorder primitive. home (index 0) and an already-front tab (index 1)
-  // are no-ops; _tabMru off leaves the order untouched.
-  const idx = _tabs.findIndex((t) => t.id === id);
-  if (_tabMru && idx > 1) moveTab(idx, 1);
-  // SFTP per-tab：切 tab 不动其他 tab 的 SFTP 状态（mirror AI panel 的"跨导航持久"模型）
-  // Transfers popover state persists across tab switches; closed only by user.
+  const tab = _tabs.find((candidate) => candidate.id === id);
+  if (!tab) return;
+  if (id === "home") {
+    _activeWorkspaceId = "home";
+    _activePaneId = "home";
+    _activeTabId = "home";
+    _settingsActive = false;
+  } else if (tab.paneOf) {
+    setActivePane(id);
+  } else {
+    setActiveWorkspace(id);
+  }
 }
 
 export function addTab(tab: Tab) {
-  ai.activateTab(tab.id);
-  if (tab.type === "ssh") {
-    _sftpPanelWidthByTab[tab.id] = _sftpPanelDefaultWidth;
+  const { workspaceId: _workspaceId, paneOf: _paneOf, ...rootTab } = tab;
+  ai.activateTab(rootTab.id);
+  if (rootTab.type === "ssh") {
+    sftpPanel.seedWidth(rootTab.id);
   }
-  // MRU on: new tab is the most-recently-focused → front of the session region
-  // (index 1, right after the fixed home tab), no "freshly created but not at
-  // front" special case. MRU off: append at the end (pre-MRU behavior).
-  _tabs.splice(_tabMru ? 1 : _tabs.length, 0, tab);
-  _activeTabId = tab.id;
+  // Plugin panels follow the manager's per-area auto-open toggles. Local
+  // shell tabs run exec as a child process, same capability class as ssh.
+  // Mobile stays out of v1: the panels have no touch close affordance yet
+  // (desktop closes via Esc) — same scope the old desktop-only menu had.
+  if (!isMobile && (rootTab.type === "ssh" || rootTab.type === "local")) {
+    pluginStore.openForNewTab(rootTab.id);
+  }
+  // MRU on: new tab is the most-recently-focused → front of the session region.
+  _tabs.splice(_tabMru ? 1 : _tabs.length, 0, rootTab);
+  if (isTerminalTabType(rootTab.type)) ensureWorkspaceLayout(rootTab.id);
+  _activeWorkspaceId = rootTab.id;
+  _activePaneId = rootTab.id;
+  _activeTabId = rootTab.id;
+  _focusedPaneByWorkspace[rootTab.id] = rootTab.id;
   _settingsActive = false;
-  recordRecentHomeItem(tab);
+  recordRecentHomeItem(rootTab);
 }
+
 
 function recordRecentHomeItem(tab: Tab): void {
   const itemId = homeItemIdForTab(tab);
@@ -402,26 +566,27 @@ export function moveTab(fromIdx: number, toIdx: number) {
 }
 
 export function closeTab(id: string) {
-  const idx = _tabs.findIndex(t => t.id === id);
-  if (idx < 0 || _tabs[idx].type === "home") return;
-  const wasActive = _activeTabId === id;
-  _tabs.splice(idx, 1);
-  delete _terminalTitles[id];
-  // tab 自身没了，对应的 SFTP 实例也得 unmount —— 删 map entry 让 {#each} 收掉
-  if (_sftpOpenByTab[id]) {
-    const next = { ..._sftpOpenByTab };
-    delete next[id];
-    _sftpOpenByTab = next;
+  const tab = _tabs.find((candidate) => candidate.id === id);
+  if (!tab || tab.type === "home") return;
+  if (tab.paneOf) {
+    closePane(id);
+    return;
   }
-  delete _sftpPanelWidthByTab[id];
-  // 同步 tombstone 先封死 start/send 的异步 continuation，再 fire-and-forget
-  // 清 actor；即使 lazy actor 尚未落前端 store，也不会在 tab 关闭后复活。
-  ai.disposeTab(id).catch((error) => {
-    console.warn("[ai] dispose on tab close:", error);
-    toast.error(errMsg(error));
-  });
-  if (wasActive) {
-    _activeTabId = _tabs[Math.min(idx, _tabs.length - 1)]?.id ?? "home";
+
+  const wasActiveWorkspace = _activeWorkspaceId === id || _activeTabId === id;
+  const visibleBefore = workspaceTabs();
+  const visibleIndex = visibleBefore.findIndex((candidate) => candidate.id === id);
+  const idsToClose = [id, ..._tabs.filter((candidate) => candidate.workspaceId === id).map((candidate) => candidate.id)];
+  _tabs = _tabs.filter((candidate) => !idsToClose.includes(candidate.id));
+  for (const tabId of idsToClose) disposeTabResources(tabId);
+  delete _layoutByWorkspace[id];
+  delete _focusedPaneByWorkspace[id];
+
+  if (wasActiveWorkspace) {
+    const remaining = workspaceTabs();
+    const next = remaining[Math.min(Math.max(visibleIndex, 0), remaining.length - 1)];
+    const nextId = next?.id ?? "home";
+    setActiveWorkspace(nextId);
   }
 }
 
@@ -470,7 +635,6 @@ export function openConnectionCopy(kind: ConnectionKind, sourceId: string) {
 export function settingsBack() {
   if (_settingsPage === "connection-edit") _settingsPage = "connections";
   else if (_settingsPage === "credential-edit") _settingsPage = "credentials";
-  else if (_settingsPage === "import-ssh-config") _settingsPage = "import-export";
   else _settingsPage = "menu";
 }
 
@@ -571,6 +735,7 @@ interface TerminalControls {
    *  hover preview. Optional, same as readViewport. */
   readViewportText?(): string[] | null;
 }
+
 const _terminalControls = new Map<string, TerminalControls>();
 export function registerTerminalControls(tabId: string, controls: TerminalControls) {
   _terminalControls.set(tabId, controls);
@@ -608,7 +773,6 @@ export function readTerminalViewport(tabId: string): ViewportSnapshot | null {
 export function readTerminalViewportText(tabId: string): string[] | null {
   return _terminalControls.get(tabId)?.readViewportText?.() ?? null;
 }
-
 /* ─── Session registry (for broadcast) ─── */
 interface SessionEntry {
   tabId: string;
@@ -619,6 +783,16 @@ export interface SessionInfo extends SessionEntry {
   label: string;
 }
 let _sessions = $state<SessionEntry[]>([]);
+
+export function terminalConnectionStatus(tabId: string): TerminalConnectionStatus {
+  return _terminalConnectionStatusByTab[tabId] ?? "connecting";
+}
+export function setTerminalConnectionStatus(tabId: string, status: TerminalConnectionStatus) {
+  _terminalConnectionStatusByTab[tabId] = status;
+}
+export function clearTerminalConnectionStatus(tabId: string) {
+  delete _terminalConnectionStatusByTab[tabId];
+}
 
 /**
  * Pending `waitForSession` calls keyed by tabId. A poll-loop in AppShell
@@ -1170,13 +1344,11 @@ export function openSftp() {
   if (!_activeTabId) return;
   const tab = _tabs.find(t => t.id === _activeTabId);
   if (!tab || tab.type !== "ssh") return;
-  _sftpOpenByTab = { ..._sftpOpenByTab, [_activeTabId]: true };
+  sftpPanel.openPanel(_activeTabId);
 }
 export function closeSftp() {
-  if (!_activeTabId || !_sftpOpenByTab[_activeTabId]) return;
-  const next = { ..._sftpOpenByTab };
-  delete next[_activeTabId];
-  _sftpOpenByTab = next;
+  if (!_activeTabId || !sftpPanel.isOpen(_activeTabId)) return;
+  sftpPanel.closePanel(_activeTabId);
 }
 
 /* ─── Pinned profiles ─── */

@@ -70,8 +70,6 @@ fn build_state() -> AppResult<AppState> {
         passphrase_waiters: Mutex::new(HashMap::new()),
         host_key_waiters: Mutex::new(HashMap::new()),
         passphrase_cache: Mutex::new(HashMap::new()),
-        #[cfg(desktop)]
-        window_groups: Mutex::new(crate::commands::window::WindowGroups::default()),
         ai_sessions: Mutex::new(HashMap::new()),
         ai_session_owners: Arc::new(Mutex::new(HashMap::new())),
         ai_remote_shell_cache: Mutex::new(HashMap::new()),
@@ -260,11 +258,6 @@ fn dispatch(
             &arg::<String>(&args, "id")?,
         )),
         "ssh_algorithm_catalog" => ok(Ok::<_, AppError>(crate::ssh::algorithms::catalog())),
-        // Parse-only (no native dialog): the frontend reads ~/.ssh/config text and
-        // sends it; returns the parsed entries. import_ssh_config returns a bare Vec.
-        "import_ssh_config" => ok(Ok::<_, AppError>(
-            crate::commands::profile::import_ssh_config(arg::<String>(&args, "content")?),
-        )),
         // List the local shells the host offers (pure engine, no UI).
         "refresh_shells" => ok(crate::commands::pty::refresh_shells()),
 
@@ -332,6 +325,47 @@ fn dispatch(
             &state.db,
             &arg::<String>(&args, "id")?,
         )),
+
+        // ---- plugins (JCEF hosts the UI but has no asset protocol, so iframe
+        //      loading is unavailable there; registry + exec still work) ----
+        "plugins_root" => ok(Ok::<_, AppError>(
+            crate::commands::plugin::plugins_dir(state)
+                .to_string_lossy()
+                .into_owned(),
+        )),
+        "install_plugin" => {
+            use base64::{engine::general_purpose::STANDARD, Engine};
+            let b64: String = arg(&args, "base64Zip")?;
+            // Same region-button contract as the Tauri command — passing None
+            // here would silently skip the area mismatch validation.
+            let area = optional_string_arg(&args, "area")?;
+            crate::commands::plugin::ensure_zip_b64_within_cap(&b64).map_err(err_value)?;
+            let bytes = STANDARD.decode(b64.trim()).map_err(|e| {
+                err_value(AppError::config(
+                    "crypto_base64_decode_failed",
+                    json!({ "err": e.to_string() }),
+                ))
+            })?;
+            ok(crate::commands::plugin::install_impl(
+                state,
+                &bytes,
+                area.as_deref(),
+            ))
+        }
+        "list_plugins" => ok(crate::db::plugin::list(&state.db)),
+        "set_plugin_enabled" => {
+            let id: String = arg(&args, "id")?;
+            let enabled: bool = arg(&args, "enabled")?;
+            ok(crate::db::plugin::set_enabled(&state.db, &id, enabled))
+        }
+        "set_plugin_order" => {
+            let ids: Vec<String> = arg(&args, "ids")?;
+            ok(crate::db::plugin::set_order(&state.db, &ids))
+        }
+        "uninstall_plugin" => {
+            let id: String = arg(&args, "id")?;
+            ok(crate::commands::plugin::uninstall_impl(state, &id))
+        }
 
         // ---- settings / snippets / highlights ----
         "get_setting" => {
@@ -689,16 +723,9 @@ fn dispatch(
             arg(&args, "name")?,
         )),
 
-        // ---- ssh config import ----
-        "read_ssh_config_default" => ok(crate::commands::profile::read_ssh_config_default()),
         "read_default_key_file" => ok(crate::commands::profile::read_default_key_file(arg(
             &args, "name",
         )?)),
-        "import_ssh_entries" => ok(crate::commands::profile::do_import_ssh_entries(
-            &state.db,
-            state.secret_store.as_ref(),
-            arg(&args, "entries")?,
-        )),
 
         // ---- config import/export (JSON-string core; the *_to_file / *_from_file
         //      dialog variants are handled browser-side by the IPC shim) ----
@@ -938,6 +965,15 @@ async fn dispatch_async(
         //      the native pick dialogs that supply that path are host-provided) ----
         "sftp_connect" => sftp_connect(state, owner, args).await,
         "sftp_connect_session" => sftp_connect_session(state, owner, args).await,
+        "plugin_exec" => {
+            let session_id: String = arg(&args, "sessionId")?;
+            let command: String = arg(&args, "command")?;
+            let timeout_ms = args.get("timeoutMs").and_then(Value::as_u64);
+            ok(crate::commands::plugin::plugin_exec_impl(
+                state, owner, session_id, command, timeout_ms,
+            )
+            .await)
+        }
         "sftp_home" => ok(sftp_handle(state, &arg::<String>(&args, "sftpId")?)?
             .home_dir()
             .await),
@@ -1057,15 +1093,23 @@ async fn dispatch_async(
         }
         "ai_list_models" => ok(crate::ai::commands::ai_list_models_impl(
             state,
-            arg(&args, "provider")?,
-            args.get("apiKey")
+            args.get("providerId")
                 .and_then(Value::as_str)
                 .map(str::to_string),
-            args.get("endpoint")
+            arg(&args, "protocol")?,
+            arg(&args, "endpoint")?,
+            args.get("apiKey")
                 .and_then(Value::as_str)
                 .map(str::to_string),
         )
         .await),
+        "ai_provider_list" => ok(crate::ai::commands::ai_provider_list_impl(state).await),
+        "ai_provider_save" => {
+            ok(crate::ai::commands::ai_provider_save_impl(state, arg(&args, "patch")?).await)
+        }
+        "ai_provider_delete" => {
+            ok(crate::ai::commands::ai_provider_delete_impl(state, arg(&args, "id")?).await)
+        }
         "ai_list_sessions" => ok(crate::ai::commands::ai_list_sessions_for_owner(
             state, owner,
         )),

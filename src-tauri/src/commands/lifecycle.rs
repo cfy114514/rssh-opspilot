@@ -1201,10 +1201,6 @@ mod tests {
         async fn list_models(&self) -> AppResult<Vec<crate::ai::llm::ModelInfo>> {
             Ok(Vec::new())
         }
-
-        fn provider(&self) -> &'static str {
-            "test"
-        }
     }
 
     #[async_trait]
@@ -1220,10 +1216,6 @@ mod tests {
 
         async fn list_models(&self) -> AppResult<Vec<crate::ai::llm::ModelInfo>> {
             Ok(Vec::new())
-        }
-
-        fn provider(&self) -> &'static str {
-            "test"
         }
     }
 
@@ -1262,10 +1254,6 @@ mod tests {
         async fn list_models(&self) -> AppResult<Vec<crate::ai::llm::ModelInfo>> {
             Ok(Vec::new())
         }
-
-        fn provider(&self) -> &'static str {
-            "test"
-        }
     }
 
     fn empty_state() -> AppState {
@@ -1289,8 +1277,6 @@ mod tests {
             passphrase_waiters: Mutex::new(HashMap::new()),
             host_key_waiters: Mutex::new(HashMap::new()),
             passphrase_cache: Mutex::new(HashMap::new()),
-            #[cfg(desktop)]
-            window_groups: Mutex::new(crate::commands::window::WindowGroups::default()),
             ai_sessions: Mutex::new(HashMap::new()),
             ai_session_owners: Arc::new(Mutex::new(HashMap::new())),
             ai_remote_shell_cache: Mutex::new(HashMap::new()),
@@ -1316,6 +1302,7 @@ mod tests {
         };
         let pending = crate::ai::session::start(
             crate::ai::session::SessionConfig {
+                provider: "provider-test".into(),
                 tab_id: tab_id.to_owned(),
                 target_id: "target".into(),
                 skill: "general".into(),
@@ -1361,6 +1348,7 @@ mod tests {
         };
         let pending = crate::ai::session::start(
             crate::ai::session::SessionConfig {
+                provider: "provider-test".into(),
                 tab_id: tab_id.to_owned(),
                 target_id: "target".into(),
                 skill: "general".into(),
@@ -1404,6 +1392,7 @@ mod tests {
         };
         let pending = crate::ai::session::start(
             crate::ai::session::SessionConfig {
+                provider: "provider-test".into(),
                 tab_id: tab_id.to_owned(),
                 target_id: "target".into(),
                 skill: "general".into(),

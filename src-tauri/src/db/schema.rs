@@ -2,7 +2,7 @@ use rusqlite::{params, Connection};
 
 use crate::error::AppResult;
 
-const SCHEMA_VERSION: u32 = 30;
+const SCHEMA_VERSION: u32 = 33;
 
 fn column_exists(conn: &Connection, table: &str, col: &str) -> AppResult<bool> {
     let mut stmt = conn.prepare("SELECT 1 FROM pragma_table_info(?1) WHERE name = ?2")?;
@@ -710,6 +710,167 @@ pub fn migrate(conn: &Connection) -> AppResult<()> {
         }
     }
 
+    // v31 is a compatibility bridge for databases created by either side of
+    // the fork while both branches used schema versions 28..30. Keep the
+    // original numbered migrations above unchanged, then make the union
+    // idempotently here so neither an OpsPilot DB nor an upstream DB loses
+    // features after synchronization.
+    if version < 31 {
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS ai_providers (
+                 id         TEXT PRIMARY KEY,
+                 name       TEXT NOT NULL,
+                 protocol   TEXT NOT NULL,
+                 model      TEXT NOT NULL DEFAULT '',
+                 endpoint   TEXT NOT NULL,
+                 created_at INTEGER NOT NULL DEFAULT 0,
+                 updated_at INTEGER NOT NULL DEFAULT 0
+             );
+
+             CREATE TABLE IF NOT EXISTS opspilot_sessions (
+                 id          TEXT PRIMARY KEY,
+                 target_kind TEXT NOT NULL CHECK (target_kind IN ('ssh', 'local', 'docker_exec', 'kubectl_exec')),
+                 target_id   TEXT NOT NULL,
+                 host        TEXT,
+                 started_at  INTEGER NOT NULL,
+                 ended_at    INTEGER,
+                 generation  INTEGER NOT NULL DEFAULT 0
+             );
+
+             CREATE TABLE IF NOT EXISTS opspilot_events (
+                 id                   TEXT PRIMARY KEY,
+                 session_id           TEXT NOT NULL REFERENCES opspilot_sessions(id) ON DELETE CASCADE,
+                 source_block_id      INTEGER,
+                 kind                 TEXT NOT NULL CHECK (kind IN (
+                                          'command_observed',
+                                          'suggestion_accepted',
+                                          'suggestion_dismissed'
+                                      )),
+                 host                 TEXT,
+                 cwd                  TEXT,
+                 cwd_source           TEXT NOT NULL CHECK (cwd_source IN ('prompt', 'unknown')),
+                 cwd_confidence       REAL NOT NULL CHECK (cwd_confidence >= 0.0 AND cwd_confidence <= 1.0),
+                 command_redacted     TEXT,
+                 suggestion_id        TEXT,
+                 origin_suggestion_id TEXT,
+                 exit_code            INTEGER,
+                 exit_source          TEXT NOT NULL CHECK (exit_source IN ('unavailable', 'shell_integration')),
+                 generation           INTEGER NOT NULL DEFAULT 0,
+                 occurred_at          INTEGER NOT NULL,
+                 CHECK (
+                   (kind = 'command_observed'
+                    AND source_block_id IS NOT NULL
+                    AND command_redacted IS NOT NULL
+                    AND suggestion_id IS NULL)
+                   OR
+                   (kind IN ('suggestion_accepted', 'suggestion_dismissed')
+                    AND source_block_id IS NULL
+                    AND command_redacted IS NULL
+                    AND suggestion_id IS NOT NULL
+                    AND origin_suggestion_id IS NULL)
+                 )
+             );
+
+             CREATE TABLE IF NOT EXISTS opspilot_memory_state (
+                 singleton  INTEGER PRIMARY KEY CHECK (singleton = 1),
+                 cleared_at INTEGER NOT NULL,
+                 clear_generation INTEGER NOT NULL DEFAULT 0
+             );
+             INSERT OR IGNORE INTO opspilot_memory_state (singleton, cleared_at)
+             VALUES (1, -1);
+
+             CREATE UNIQUE INDEX IF NOT EXISTS idx_opspilot_events_block_kind
+             ON opspilot_events(session_id, source_block_id, kind)
+             WHERE source_block_id IS NOT NULL;
+
+             CREATE INDEX IF NOT EXISTS idx_opspilot_events_time
+             ON opspilot_events(occurred_at DESC, id DESC);
+
+             CREATE INDEX IF NOT EXISTS idx_opspilot_events_feedback
+             ON opspilot_events(suggestion_id, kind, host, cwd)
+             WHERE suggestion_id IS NOT NULL;
+
+             CREATE TRIGGER IF NOT EXISTS opspilot_events_v1_exit_state_insert
+             BEFORE INSERT ON opspilot_events
+             WHEN NEW.exit_code IS NOT NULL OR NEW.exit_source <> 'unavailable'
+             BEGIN
+                 SELECT RAISE(ABORT, 'opspilot v1 exit state must be unavailable');
+             END;
+
+             CREATE TRIGGER IF NOT EXISTS opspilot_events_v1_exit_state_update
+             BEFORE UPDATE OF exit_code, exit_source ON opspilot_events
+             WHEN NEW.exit_code IS NOT NULL OR NEW.exit_source <> 'unavailable'
+             BEGIN
+                 SELECT RAISE(ABORT, 'opspilot v1 exit state must be unavailable');
+             END;",
+        )?;
+
+        if table_exists(conn, "opspilot_sessions")?
+            && !column_exists(conn, "opspilot_sessions", "generation")?
+        {
+            conn.execute_batch(
+                "ALTER TABLE opspilot_sessions
+                 ADD COLUMN generation INTEGER NOT NULL DEFAULT 0;",
+            )?;
+        }
+        if table_exists(conn, "opspilot_events")?
+            && !column_exists(conn, "opspilot_events", "generation")?
+        {
+            conn.execute_batch(
+                "ALTER TABLE opspilot_events
+                 ADD COLUMN generation INTEGER NOT NULL DEFAULT 0;",
+            )?;
+        }
+        if table_exists(conn, "opspilot_memory_state")?
+            && !column_exists(conn, "opspilot_memory_state", "clear_generation")?
+        {
+            conn.execute_batch(
+                "ALTER TABLE opspilot_memory_state
+                 ADD COLUMN clear_generation INTEGER NOT NULL DEFAULT 0;",
+            )?;
+        }
+    }
+
+    if version < 32 {
+        // Apply upstream's richer defaults to fork databases that already
+        // passed the upstream v29 migration number.
+        if table_exists(conn, "highlights")? {
+            conn.execute(
+                "DELETE FROM highlights WHERE keyword IN ('ERROR', 'WARN')",
+                [],
+            )?;
+            for (keyword, name, color) in crate::db::highlight::DEFAULT_RULES {
+                let affected = conn.execute(
+                    "UPDATE highlights SET name = ?2, color = ?3, enabled = 1, is_regex = 1, is_case_sensitive = 0 WHERE keyword = ?1",
+                    params![keyword, name, color],
+                )?;
+                if affected == 0 {
+                    conn.execute(
+                        "INSERT INTO highlights (keyword, name, color, enabled, is_regex, is_case_sensitive) VALUES (?1, ?2, ?3, 1, 1, 0)",
+                        params![keyword, name, color],
+                    )?;
+                }
+            }
+        }
+    }
+
+    if version < 33 {
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS plugins (
+                 id           TEXT PRIMARY KEY,
+                 name         TEXT NOT NULL,
+                 version      TEXT NOT NULL,
+                 description  TEXT NOT NULL DEFAULT '',
+                 author       TEXT NOT NULL DEFAULT '',
+                 area         TEXT NOT NULL,
+                 preview      TEXT NOT NULL DEFAULT '',
+                 enabled      INTEGER NOT NULL DEFAULT 1,
+                 installed_at INTEGER NOT NULL DEFAULT 0,
+                 sort_order   INTEGER NOT NULL DEFAULT 0
+             );",
+        )?;
+    }
+
     if version < SCHEMA_VERSION {
         conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
     }
@@ -1221,10 +1382,12 @@ mod tests {
         let version: u32 = conn
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 30);
+        assert_eq!(version, 33);
         assert!(table_exists(&conn, "opspilot_sessions").unwrap());
         assert!(table_exists(&conn, "opspilot_events").unwrap());
         assert!(table_exists(&conn, "opspilot_memory_state").unwrap());
+        assert!(table_exists(&conn, "ai_providers").unwrap());
+        assert!(table_exists(&conn, "plugins").unwrap());
         for index in [
             "idx_opspilot_events_block_kind",
             "idx_opspilot_events_time",
@@ -1239,6 +1402,73 @@ mod tests {
                 .unwrap();
             assert!(exists, "missing index {index}");
         }
+    }
+
+    #[test]
+    fn migration_31_bridges_an_upstream_v30_database() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE highlights (
+                 id INTEGER PRIMARY KEY AUTOINCREMENT,
+                 keyword TEXT NOT NULL,
+                 name TEXT NOT NULL DEFAULT '',
+                 color TEXT NOT NULL,
+                 enabled INTEGER NOT NULL DEFAULT 1,
+                 is_regex INTEGER NOT NULL DEFAULT 1,
+                 is_case_sensitive INTEGER NOT NULL DEFAULT 0
+             );
+             CREATE TABLE ai_providers (
+                 id TEXT PRIMARY KEY,
+                 name TEXT NOT NULL,
+                 protocol TEXT NOT NULL,
+                 model TEXT NOT NULL DEFAULT '',
+                 endpoint TEXT NOT NULL,
+                 created_at INTEGER NOT NULL DEFAULT 0,
+                 updated_at INTEGER NOT NULL DEFAULT 0
+             );
+             CREATE TABLE plugins (
+                 id TEXT PRIMARY KEY,
+                 name TEXT NOT NULL,
+                 version TEXT NOT NULL,
+                 description TEXT NOT NULL DEFAULT '',
+                 author TEXT NOT NULL DEFAULT '',
+                 area TEXT NOT NULL,
+                 preview TEXT NOT NULL DEFAULT '',
+                 enabled INTEGER NOT NULL DEFAULT 1,
+                 installed_at INTEGER NOT NULL DEFAULT 0,
+                 sort_order INTEGER NOT NULL DEFAULT 0
+             );
+             INSERT INTO ai_providers (id, name, protocol, endpoint)
+             VALUES ('provider-1', 'Existing', 'openai-compatible', 'https://example.invalid');
+             INSERT INTO plugins (id, name, version, area)
+             VALUES ('plugin-1', 'Existing', '1.0.0', 'side');
+             PRAGMA user_version = 30;",
+        )
+        .unwrap();
+
+        migrate(&conn).unwrap();
+
+        let version: u32 = conn
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, 33);
+        for table in [
+            "ai_providers",
+            "plugins",
+            "opspilot_sessions",
+            "opspilot_events",
+            "opspilot_memory_state",
+        ] {
+            assert!(table_exists(&conn, table), "missing table {table}");
+        }
+        let provider_count: u32 = conn
+            .query_row("SELECT COUNT(*) FROM ai_providers", [], |row| row.get(0))
+            .unwrap();
+        let plugin_count: u32 = conn
+            .query_row("SELECT COUNT(*) FROM plugins", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(provider_count, 1);
+        assert_eq!(plugin_count, 1);
     }
 
     #[test]

@@ -14,7 +14,6 @@
   import HighlightManager from "./HighlightManager.svelte";
   import SyncScreen from "./SyncScreen.svelte";
   import ImportExportScreen from "./ImportExportScreen.svelte";
-  import SshConfigImportScreen from "./SshConfigImportScreen.svelte";
   import RecordingSettings from "./RecordingSettings.svelte";
   import PlaybackScreen from "./PlaybackScreen.svelte";
   import ShortcutsScreen from "./ShortcutsScreen.svelte";
@@ -24,6 +23,7 @@
   import CliSettings from "./CliSettings.svelte";
   import AppearanceSettings from "./AppearanceSettings.svelte";
   import AiSettings from "./AiSettings.svelte";
+  import PluginManager from "../plugins/PluginManager.svelte";
   import Select from "./Select.svelte";
   import ConnectionList from "./ConnectionList.svelte";
   import ConnectionEditor from "./ConnectionEditor.svelte";
@@ -45,7 +45,6 @@
     "highlights":         { component: HighlightManager },
     "sync":               { component: SyncScreen },
     "import-export":      { component: ImportExportScreen },
-    "import-ssh-config":  { component: SshConfigImportScreen },
     "shell-settings":     { component: ShellSettings },
     "command-blocks":     { component: CommandBlockSettings },
     "recording-settings": { component: RecordingSettings },
@@ -53,6 +52,7 @@
     "cli":                { component: CliSettings },
     "appearance":         { component: AppearanceSettings },
     "ai":                 { component: AiSettings },
+    "plugins":            { component: PluginManager },
     "shortcuts":          { component: ShortcutsScreen },
     "about":              { component: AboutScreen },
   };
@@ -83,13 +83,14 @@
     { id: "command-blocks", label: t("settings.section.command_block"), section: "settings.group.advanced" },
     { id: "sync", label: t("settings.section.sync"), section: "settings.group.advanced" },
     { id: "ai", label: t("settings.section.ai"), section: "settings.group.advanced" },
+    { id: "plugins", label: t("settings.section.plugins"), section: "settings.group.advanced" },
     { id: "cli", label: t("settings.section.cli"), section: "settings.group.advanced" },
     { id: "shortcuts", label: t("settings.section.shortcuts"), section: "settings.group.help" },
     { id: "about", label: t("settings.section.about"), section: "settings.group.help" },
   ]);
 
-  const hiddenOnCompact = new Set<string>(["cli", "shortcuts"]);
-  const hiddenOnMobile = new Set<string>(["cli", "dynamic-discovery"]);
+  const hiddenOnCompact = new Set<string>([]);
+  const hiddenOnMobile = new Set<string>(["cli", "dynamic-discovery", "shortcuts", "plugins"]);
   // ConnectionEditor removes the desktop-only Serial type on mobile;
   // the unified connection-list entry itself remains available.
   let menu = $derived(
@@ -116,7 +117,6 @@
     if (id === "connections" && p === "connection-edit") return true;
     if (id === "credentials" && p === "credential-edit") return true;
     if (id === "groups" && p === "group-edit") return true;
-    if (id === "import-export" && p === "import-ssh-config") return true;
     return false;
   }
 

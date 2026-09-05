@@ -428,8 +428,12 @@
     {/each}
   {:else if allItems.length === 0}
     <div class="empty-state">
-      <p>No Profiles or Port Forwards yet</p>
-      <button class="btn btn-accent" onclick={() => app.navigate("settings")}>Go to Settings</button>
+      <p>{t("home.empty.title")}</p>
+      <p class="cta">{t("home.empty.cta")}</p>
+      <div class="empty-actions">
+        <button class="btn btn-accent" onclick={() => app.navigate("settings")}>{t("home.empty.go_settings")}</button>
+        <button class="btn" onclick={() => app.navigate("import-export")}>{t("home.empty.migrate")}</button>
+      </div>
     </div>
   {/if}
 </div>
@@ -522,10 +526,12 @@
 
   .card-body { flex: 1; min-width: 0; }
   .card-name { font-weight: 600; font-size: 14px; color: var(--text); margin-bottom: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .card-sub { font-size: 12px; color: var(--text-sub); font-family: monospace; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .card-sub { font-size: 12px; color: var(--text-sub); font-family: var(--term-font); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
   .empty-state { text-align: center; padding: 60px 24px; color: var(--text-dim); }
   .empty-state p { margin-bottom: 12px; }
+  .empty-state .cta { font-size: 13px; }
+  .empty-actions { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; }
 
   @media (max-width: 620px) {
     .logo { width: 100%; }
