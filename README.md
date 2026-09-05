@@ -37,15 +37,17 @@ The fork adds a safe, local-first suggestion loop to the existing terminal:
 1. RSSH observes the command blocks and shell prompt already rendered by xterm.
 2. A deterministic LOCAL predictor proposes up to three read-only commands for
    common log, Spark/YARN, HDFS, and directory-orientation situations.
-3. The palette appears only when a returned prompt is recognized; a typed line
+3. Recognized PowerShell and `cmd.exe` prompts receive shell-compatible command
+   forms; unknown prompts keep the POSIX-compatible defaults.
+4. The palette appears only when a returned prompt is recognized; a typed line
    filters candidates by command prefix.
-4. Clicking a suggestion or pressing `Tab` inserts the missing text into the
+5. Clicking a suggestion or pressing `Tab` inserts the missing text into the
    terminal but never submits `Enter` automatically.
-5. Accepted/dismissed feedback is stored locally and scoped to the current
+6. Accepted/dismissed feedback is stored locally and scoped to the current
    target, host, and working directory so later sessions can improve ranking.
-6. Optional command observations are redacted locally and are off by default.
+7. Optional command observations are redacted locally and are off by default.
    Terminal output is never stored in OpsPilot memory.
-7. `Ask AI` and `Summarize` pass redacted blocks to RSSH's existing AI panel.
+8. `Ask AI` and `Summarize` pass redacted blocks to RSSH's existing AI panel.
 
 The default path is zero-install on the remote server: no agent, shell hook,
 daemon, extra port, hidden `pwd`, or hidden `ls` command is required. Alternate
