@@ -132,6 +132,14 @@ describe("suggestNextCommands", () => {
     expect(suggestions.every((item) => item.risk === "read-only")).toBe(true);
   });
 
+  it("offers a bounded Docker completion for an explicit prefix without context signals", () => {
+    const suggestions = suggestNextCommands({
+      recentBlocks: ["ordinary command output"],
+      input: "docker p",
+    });
+    expect(suggestions.map((item) => item.command)).toEqual(["docker ps"]);
+  });
+
   it("filters candidates by the exact command prefix while the user is typing", () => {
     const suggestions = suggestNextCommands({
       recentBlocks: [],

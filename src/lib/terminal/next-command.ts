@@ -118,6 +118,15 @@ function addSuggestion(
   });
 }
 
+const PREFIX_COMPLETIONS = [
+  {command: "git status --short", reason: "确认当前工作区改动", confidence: 0.64},
+  {command: "git diff --stat", reason: "快速查看改动规模", confidence: 0.60},
+  {command: "kubectl get pods", reason: "查看当前命名空间中的 Pod 状态", confidence: 0.64},
+  {command: "kubectl get namespaces", reason: "查看可用的 Kubernetes 命名空间", confidence: 0.60},
+  {command: "docker ps", reason: "查看当前运行中的容器", confidence: 0.64},
+  {command: "docker images", reason: "查看本机已有的容器镜像", confidence: 0.60},
+] as const;
+
 function logCandidate(context: NextCommandContext, text: string): string {
   const matches = [...text.matchAll(/(?:^|\s)([A-Za-z0-9_./-]+\.log)\b/gi)]
     .map((match) => match[1])
@@ -136,6 +145,9 @@ export function suggestNextCommands(context: NextCommandContext): NextCommandSug
   const recent = context.recentBlocks.slice(-4).join("\n");
   const haystack = `${context.cwd ?? ""}\n${context.promptLine ?? ""}\n${recent}`.toLowerCase();
   const shell = context.shell ?? "posix";
+  const prefix = context.input?.trimStart() ?? "";
+  const caseInsensitive = shell === "cmd" || shell === "powershell";
+  const comparablePrefix = caseInsensitive ? prefix.toLocaleLowerCase() : prefix;
   const suggestions: NextCommandSuggestion[] = [];
 
   const log = shellQuote(logCandidate(context, recent), shell);
@@ -195,6 +207,21 @@ export function suggestNextCommands(context: NextCommandContext): NextCommandSug
     addSuggestion(suggestions, "docker images", "查看本机已有的容器镜像", 0.75);
   }
 
+  // Once the user has typed an explicit command prefix, supplement contextual
+  // suggestions with the bounded read-only command catalog. This keeps empty
+  // prompts contextual while allowing `docker p`/`kubectl get p` to complete
+  // even when the surrounding output contains no recognizable signal.
+  if (prefix) {
+    for (const candidate of PREFIX_COMPLETIONS) {
+      const comparableCommand = caseInsensitive
+        ? candidate.command.toLocaleLowerCase()
+        : candidate.command;
+      if (comparableCommand.startsWith(comparablePrefix)) {
+        addSuggestion(suggestions, candidate.command, candidate.reason, candidate.confidence);
+      }
+    }
+  }
+
   if (suggestions.length === 0) {
     if (shell === "powershell") {
       addSuggestion(suggestions, "Get-Location", "确认当前工作目录", context.cwd ? 0.72 : 0.62);
@@ -216,8 +243,6 @@ export function suggestNextCommands(context: NextCommandContext): NextCommandSug
     return {...item, confidence: Math.max(0, Math.min(1, item.confidence + adjustment))};
   });
   ranked.sort((a, b) => b.confidence - a.confidence);
-  const prefix = context.input?.trimStart() ?? "";
-  const caseInsensitive = shell === "cmd" || shell === "powershell";
   const visible = prefix
     ? ranked.filter((item) => {
       const command = caseInsensitive ? item.command.toLocaleLowerCase() : item.command;

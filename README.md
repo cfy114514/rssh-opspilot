@@ -40,7 +40,8 @@ The fork adds a safe, local-first suggestion loop to the existing terminal:
 3. Recognized PowerShell and `cmd.exe` prompts receive shell-compatible command
    forms; unknown prompts keep the POSIX-compatible defaults.
 4. The palette appears only when a returned prompt is recognized; a typed line
-   filters candidates by command prefix.
+   filters candidates by command prefix, and an explicit prefix can surface a
+   bounded local command even when surrounding output has no matching signal.
 5. Clicking a suggestion or pressing `Tab` inserts the missing text into the
    terminal but never submits `Enter` automatically.
 6. Accepted/dismissed feedback is stored locally and scoped to the current
