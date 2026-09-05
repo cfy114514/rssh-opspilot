@@ -70,6 +70,18 @@ describe("suggestNextCommands", () => {
     expect(suggestions.map((item) => item.command)).toEqual(["cd", "dir /A"]);
   });
 
+  it("uses cmd-compatible quoting for wildcard log arguments", () => {
+    const suggestions = suggestNextCommands({
+      cwd: "C:\\Program Files\\service\\logs",
+      recentBlocks: ["ERROR while starting service"],
+      shell: "cmd",
+    });
+    expect(suggestions[0].command).toContain("findstr /I /N");
+    expect(suggestions[0].command).toContain(" *.log");
+    expect(suggestions[0].command).not.toContain("'*.log'");
+    expect(suggestions[1].command).toBe("more *.log");
+  });
+
   it("suggests read-only Git workspace orientation commands", () => {
     const suggestions = suggestNextCommands({
       cwd: "/srv/repository",

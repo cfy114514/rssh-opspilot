@@ -79,7 +79,14 @@ export function parsePromptLine(line: string): PromptContext | null {
   return {prompt, input, shell: shellForPrompt(prompt), host, cwd};
 }
 
-function shellQuote(value: string): string {
+function shellQuote(value: string, shell: NextCommandShell): string {
+  if (shell === "cmd") {
+    // cmd.exe does not treat single quotes as argument delimiters. Preserve
+    // the wildcard used by the read-only log suggestions and quote paths that
+    // contain cmd metacharacters with double quotes instead.
+    if (/^[A-Za-z0-9_./\\~:@%+=,*?-]+$/.test(value)) return value;
+    return `"${value.replaceAll('"', '\\"')}"`;
+  }
   if (/^[A-Za-z0-9_./~:@%+=,-]+$/.test(value)) return value;
   return `'${value.replaceAll("'", "'\\''")}'`;
 }
@@ -131,7 +138,7 @@ export function suggestNextCommands(context: NextCommandContext): NextCommandSug
   const shell = context.shell ?? "posix";
   const suggestions: NextCommandSuggestion[] = [];
 
-  const log = shellQuote(logCandidate(context, recent));
+  const log = shellQuote(logCandidate(context, recent), shell);
   const logSignals = /\.log\b|\blogs?\b|error|exception|failed|caused by|stack trace/.test(haystack);
   if (logSignals) {
     if (shell === "powershell") {
