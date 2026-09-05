@@ -122,6 +122,13 @@ describe("suggestNextCommands", () => {
     expect(suggestions.every((item) => item.risk === "read-only")).toBe(true);
   });
 
+  it("extracts a Kubernetes namespace when it precedes the resource action", () => {
+    const suggestions = suggestNextCommands({
+      recentBlocks: ["kubectl -n production describe pod api-7d9c"],
+    });
+    expect(suggestions[2]?.command).toBe("kubectl logs --tail=100 api-7d9c -n production");
+  });
+
   it("filters Kubernetes suggestions by a typed command prefix", () => {
     const suggestions = suggestNextCommands({
       recentBlocks: ["kubernetes deployment is pending"],

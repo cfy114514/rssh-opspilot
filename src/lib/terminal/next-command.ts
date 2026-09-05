@@ -296,11 +296,11 @@ function systemdUnitCandidate(text: string): string | undefined {
 
 function kubernetesPodCandidate(text: string): {pod: string; namespace?: string} | undefined {
   const matches = [...text.matchAll(
-    /\bkubectl\s+(?:describe|logs?)\s+pod\s+([A-Za-z0-9][A-Za-z0-9.-]*)(?:\s+(?:-n|--namespace)\s+([A-Za-z0-9][A-Za-z0-9.-]*))?/gi,
+    /\bkubectl\s+(?:(?:-n|--namespace)\s+([A-Za-z0-9][A-Za-z0-9.-]*)\s+)?(?:describe|logs?)\s+pod\s+([A-Za-z0-9][A-Za-z0-9.-]*)(?:\s+(?:-n|--namespace)\s+([A-Za-z0-9][A-Za-z0-9.-]*))?/gi,
   )];
   const match = matches[matches.length - 1];
-  if (!match?.[1]) return undefined;
-  return {pod: match[1], namespace: match[2]};
+  if (!match?.[2]) return undefined;
+  return {pod: match[2], namespace: match[1] ?? match[3]};
 }
 
 function dockerContainerCandidate(text: string): string | undefined {
