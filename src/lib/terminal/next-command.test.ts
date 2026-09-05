@@ -196,13 +196,18 @@ describe("suggestNextCommands", () => {
     const posix = suggestNextCommands({
       recentBlocks: ["connection refused on port 8080"],
     });
-    expect(posix.map((item) => item.command)).toEqual(["ss -lntp", "ip addr"]);
+    expect(posix.map((item) => item.command)).toEqual([
+      "ss -lntp 'sport = :8080'",
+      "ss -lntp",
+      "ip addr",
+    ]);
 
     const powershell = suggestNextCommands({
       recentBlocks: ["connection refused on port 8080"],
       shell: "powershell",
     });
     expect(powershell.map((item) => item.command)).toEqual([
+      "Get-NetTCPConnection -LocalPort 8080",
       "Get-NetTCPConnection -State Listen",
       "Get-NetIPConfiguration",
     ]);
@@ -211,7 +216,18 @@ describe("suggestNextCommands", () => {
       recentBlocks: ["connection refused on port 8080"],
       shell: "cmd",
     });
-    expect(cmd.map((item) => item.command)).toEqual(["netstat -ano", "ipconfig"]);
+    expect(cmd.map((item) => item.command)).toEqual([
+      "netstat -ano | findstr \":8080\"",
+      "netstat -ano",
+      "ipconfig",
+    ]);
+  });
+
+  it("extracts a port from host:port network errors", () => {
+    const suggestions = suggestNextCommands({
+      recentBlocks: ["connection refused on 127.0.0.1:8080"],
+    });
+    expect(suggestions[0]?.command).toBe("ss -lntp 'sport = :8080'");
   });
 
   it("offers shell-aware network prefixes without broad get- pollution", () => {

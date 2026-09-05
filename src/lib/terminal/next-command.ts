@@ -312,6 +312,15 @@ function dockerContainerCandidate(text: string): string | undefined {
   return matches[matches.length - 1];
 }
 
+function networkPortCandidate(text: string): string | undefined {
+  const matches = [...text.matchAll(
+    /\bport\s*(?:number\s*)?(?:[:=]\s*)?(\d{1,5})\b|(?:localhost|127(?:\.\d{1,3}){3}|::1|\[[0-9a-f:]+\]):(\d{1,5})\b/gi,
+  )]
+    .map((match) => match[1] ?? match[2])
+    .filter(Boolean);
+  return matches[matches.length - 1];
+}
+
 /**
  * Deterministic LOCAL predictor. It intentionally emits only bounded,
  * read-only commands and never executes or probes a server. The later ONLINE
@@ -347,14 +356,18 @@ export function suggestNextCommands(context: NextCommandContext): NextCommandSug
     }
   }
   const networkSignals = /connection refused|address already in use|\bport\s+\d+|\blistening\b|\bsocket\b|\b(?:ss|netstat|ipconfig)\b|get-nettcpconnection|network/.test(haystack);
+  const networkPort = networkPortCandidate(recent);
   if (networkSignals) {
     if (shell === "powershell") {
+      if (networkPort) addSuggestion(suggestions, `Get-NetTCPConnection -LocalPort ${networkPort}`, "查看指定端口的 PowerShell 连接", 0.88);
       addSuggestion(suggestions, "Get-NetTCPConnection -State Listen", "查看 PowerShell 监听端口", 0.82);
       addSuggestion(suggestions, "Get-NetIPConfiguration", "查看 PowerShell 网络接口配置", 0.75);
     } else if (shell === "cmd") {
+      if (networkPort) addSuggestion(suggestions, `netstat -ano | findstr ":${networkPort}"`, "筛选 Windows 指定端口连接", 0.88);
       addSuggestion(suggestions, "netstat -ano", "查看 Windows 连接和监听端口", 0.82);
       addSuggestion(suggestions, "ipconfig", "查看 Windows 网络接口配置", 0.75);
     } else {
+      if (networkPort) addSuggestion(suggestions, `ss -lntp 'sport = :${networkPort}'`, "筛选指定端口的监听进程", 0.88);
       addSuggestion(suggestions, "ss -lntp", "查看正在监听的 TCP 端口", 0.82);
       addSuggestion(suggestions, "ip addr", "查看本机网络接口地址", 0.75);
     }

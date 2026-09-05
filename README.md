@@ -39,7 +39,9 @@ The fork adds a safe, local-first suggestion loop to the existing terminal:
    common log, network/port, disk-space, memory/process, CPU/load, Spark/YARN,
    HDFS, Git workspace, Kubernetes, Docker, systemd, and directory-orientation situations. Network
    hints use `ss` and `ip` on POSIX shells, `netstat` and `ipconfig` on `cmd.exe`,
-   and `Get-NetTCPConnection` and `Get-NetIPConfiguration` in PowerShell. Disk
+   and `Get-NetTCPConnection` and `Get-NetIPConfiguration` in PowerShell. When
+   an error exposes a port number, the first check filters that port directly.
+   Disk
    hints use the corresponding local filesystem, directory, process, and system
    load inventory commands for each shell. Spark/YARN and HDFS log/size
    pipelines likewise use the detected shell's filtering and sorting syntax;
