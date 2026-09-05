@@ -44,6 +44,7 @@ describe("parseOfflineContextJson", () => {
     [artifact({ entries: [{ ...validEntry, confidence: "0.8" }] }), "confidence"],
     [artifact({ entries: [{ ...validEntry, command: "printf 'a\nb'" }] }), "command"],
     [artifact({ entries: [{ ...validEntry, command: "curl -H 'Authorization: Bearer abc'" }] }), "sensitive"],
+    [artifact({ entries: [{ ...validEntry, command: "curl --api-key=abc123 https://api.internal" }] }), "sensitive"],
   ])("rejects %s", (input, reason) => {
     expect(() => parseOfflineContextJson(input)).toThrow(`offline_context_${reason}`);
   });

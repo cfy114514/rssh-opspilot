@@ -43,7 +43,7 @@ interface ExtractObservationArgs {
 const ALWAYS_REJECT = [
   /-----BEGIN [A-Z ]*PRIVATE KEY-----/i,
   /(?:^|\s)sshpass\s+-p(?:\s|=)/i,
-  /(?:^|\s)--(?:password|passwd|token|secret)(?:\s|=)/i,
+  /(?:^|\s)--(?:password|passwd|token|secret|api[-_]?key|access[-_]?token|client[-_]?secret|private[-_]?key|credential)(?:\s|=)/i,
   /\bauthorization\s*:/i,
 ] as const;
 
