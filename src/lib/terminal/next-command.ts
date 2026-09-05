@@ -133,6 +133,20 @@ const PREFIX_COMPLETIONS: readonly PrefixCompletion[] = [
   {command: "kubectl get namespaces", reason: "查看可用的 Kubernetes 命名空间", confidence: 0.60},
   {command: "docker ps", reason: "查看当前运行中的容器", confidence: 0.64},
   {command: "docker images", reason: "查看本机已有的容器镜像", confidence: 0.60},
+  {command: "yarn application -list", reason: "查看当前 YARN 应用及状态", confidence: 0.64, minPrefixLength: 5},
+  {
+    command: "yarn logs -applicationId <application_id> | tail -200",
+    reason: "按应用汇总最近日志",
+    confidence: 0.60,
+    minPrefixLength: 5,
+  },
+  {command: "hdfs dfs -ls -h .", reason: "确认当前 HDFS 目录内容", confidence: 0.64, minPrefixLength: 8},
+  {
+    command: "hdfs dfs -du -h . | sort -h | tail -20",
+    reason: "定位当前 HDFS 目录的大对象",
+    confidence: 0.60,
+    minPrefixLength: 8,
+  },
   {command: "systemctl --failed --no-legend", reason: "查看失败的 systemd 服务", confidence: 0.64},
   {
     command: "systemctl list-units --type=service --state=running --no-legend",

@@ -231,6 +231,21 @@ describe("suggestNextCommands", () => {
     }).map((item) => item.command)).toEqual([]);
   });
 
+  it("offers bounded platform prefixes without requiring surrounding context", () => {
+    expect(suggestNextCommands({
+      recentBlocks: ["ordinary command output"],
+      input: "yarn a",
+    }).map((item) => item.command)).toEqual(["yarn application -list"]);
+    expect(suggestNextCommands({
+      recentBlocks: ["ordinary command output"],
+      input: "hdfs dfs -l",
+    }).map((item) => item.command)).toEqual(["hdfs dfs -ls -h ."]);
+    expect(suggestNextCommands({
+      recentBlocks: ["ordinary command output"],
+      input: "kubectl get n",
+    }).map((item) => item.command)).toEqual(["kubectl get namespaces"]);
+  });
+
   it("uses shell-aware read-only commands for disk-space diagnostics", () => {
     const posix = suggestNextCommands({
       recentBlocks: ["write failed: no space left on device"],
