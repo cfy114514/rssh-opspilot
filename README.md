@@ -43,7 +43,8 @@ The fork adds a safe, local-first suggestion loop to the existing terminal:
    hints use the corresponding local filesystem, directory, process, and system
    load inventory commands for each shell. Spark/YARN and HDFS log/size
    pipelines likewise use the detected shell's filtering and sorting syntax;
-   visible systemd unit names receive a service-specific status check.
+   visible systemd unit names receive a service-specific status check, and
+   visible Kubernetes Pod names receive a bounded recent-log check.
 3. Recognized PowerShell and `cmd.exe` prompts receive shell-compatible command
    forms; unknown prompts keep the POSIX-compatible defaults.
 4. The palette appears only when a returned prompt is recognized; a typed line

@@ -131,6 +131,12 @@ const PREFIX_COMPLETIONS: readonly PrefixCompletion[] = [
   {command: "git diff --stat", reason: "快速查看改动规模", confidence: 0.60},
   {command: "kubectl get pods", reason: "查看当前命名空间中的 Pod 状态", confidence: 0.64},
   {command: "kubectl get namespaces", reason: "查看可用的 Kubernetes 命名空间", confidence: 0.60},
+  {
+    command: "kubectl logs --tail=100 POD_NAME",
+    reason: "查看指定 Pod 的最近日志",
+    confidence: 0.62,
+    minPrefixLength: 12,
+  },
   {command: "docker ps", reason: "查看当前运行中的容器", confidence: 0.64},
   {command: "docker images", reason: "查看本机已有的容器镜像", confidence: 0.60},
   {command: "yarn application -list", reason: "查看当前 YARN 应用及状态", confidence: 0.64, minPrefixLength: 5},
@@ -279,6 +285,15 @@ function systemdUnitCandidate(text: string): string | undefined {
     .map((match) => match[1])
     .filter(Boolean);
   return matches[matches.length - 1];
+}
+
+function kubernetesPodCandidate(text: string): {pod: string; namespace?: string} | undefined {
+  const matches = [...text.matchAll(
+    /\bkubectl\s+(?:describe|logs?)\s+pod\s+([A-Za-z0-9][A-Za-z0-9.-]*)(?:\s+(?:-n|--namespace)\s+([A-Za-z0-9][A-Za-z0-9.-]*))?/gi,
+  )];
+  const match = matches[matches.length - 1];
+  if (!match?.[1]) return undefined;
+  return {pod: match[1], namespace: match[2]};
 }
 
 /**
@@ -453,6 +468,18 @@ export function suggestNextCommands(context: NextCommandContext): NextCommandSug
   if (suggestions.length < 3 && /\bkubectl(?:\s|$)|\bkubernetes\b|\bk8s\b/.test(haystack)) {
     addSuggestion(suggestions, "kubectl get pods", "查看当前命名空间中的 Pod 状态", 0.82);
     addSuggestion(suggestions, "kubectl get namespaces", "查看可用的 Kubernetes 命名空间", 0.75);
+    const kubernetesPod = kubernetesPodCandidate(recent);
+    if (kubernetesPod) {
+      const namespace = kubernetesPod.namespace
+        ? ` -n ${shellQuote(kubernetesPod.namespace, shell)}`
+        : "";
+      addSuggestion(
+        suggestions,
+        `kubectl logs --tail=100 ${shellQuote(kubernetesPod.pod, shell)}${namespace}`,
+        "查看指定 Pod 的最近日志",
+        0.70,
+      );
+    }
   }
 
   if (suggestions.length < 3 && /\bdocker(?:\s|$)|docker[_ -]?exec/.test(haystack)) {

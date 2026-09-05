@@ -109,6 +109,7 @@ describe("suggestNextCommands", () => {
     expect(suggestions.map((item) => item.command)).toEqual([
       "kubectl get pods",
       "kubectl get namespaces",
+      "kubectl logs --tail=100 api-7d9c -n production",
     ]);
     expect(suggestions.every((item) => item.risk === "read-only")).toBe(true);
   });
@@ -119,6 +120,14 @@ describe("suggestNextCommands", () => {
       input: "kubectl get p",
     });
     expect(suggestions.map((item) => item.command)).toEqual(["kubectl get pods"]);
+  });
+
+  it("offers a bounded Kubernetes log prefix without surrounding context", () => {
+    const suggestions = suggestNextCommands({
+      recentBlocks: ["ordinary command output"],
+      input: "kubectl logs --t",
+    });
+    expect(suggestions.map((item) => item.command)).toEqual(["kubectl logs --tail=100 POD_NAME"]);
   });
 
   it("suggests read-only Docker inventory commands", () => {
