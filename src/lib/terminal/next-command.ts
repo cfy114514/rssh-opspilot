@@ -167,8 +167,21 @@ export function suggestNextCommands(context: NextCommandContext): NextCommandSug
       0.75,
     );
   }
+  const networkSignals = /connection refused|address already in use|\bport\s+\d+|\blistening\b|\bsocket\b|\b(?:ss|netstat|ipconfig)\b|get-nettcpconnection|network/.test(haystack);
+  if (networkSignals) {
+    if (shell === "powershell") {
+      addSuggestion(suggestions, "Get-NetTCPConnection -State Listen", "查看 PowerShell 监听端口", 0.82);
+      addSuggestion(suggestions, "Get-NetIPConfiguration", "查看 PowerShell 网络接口配置", 0.75);
+    } else if (shell === "cmd") {
+      addSuggestion(suggestions, "netstat -ano", "查看 Windows 连接和监听端口", 0.82);
+      addSuggestion(suggestions, "ipconfig", "查看 Windows 网络接口配置", 0.75);
+    } else {
+      addSuggestion(suggestions, "ss -lntp", "查看正在监听的 TCP 端口", 0.82);
+      addSuggestion(suggestions, "ip addr", "查看本机网络接口地址", 0.75);
+    }
+  }
   const logSignals = /\.log\b|\blogs?\b|error|exception|failed|caused by|stack trace/.test(haystack);
-  if (!systemdSignals && logSignals) {
+  if (!systemdSignals && !networkSignals && logSignals) {
     if (shell === "powershell") {
       addSuggestion(
         suggestions,

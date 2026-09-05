@@ -159,6 +159,28 @@ describe("suggestNextCommands", () => {
     expect(suggestions[0].command).toBe("systemctl --failed --no-legend");
   });
 
+  it("uses shell-aware read-only commands for network diagnostics", () => {
+    const posix = suggestNextCommands({
+      recentBlocks: ["connection refused on port 8080"],
+    });
+    expect(posix.map((item) => item.command)).toEqual(["ss -lntp", "ip addr"]);
+
+    const powershell = suggestNextCommands({
+      recentBlocks: ["connection refused on port 8080"],
+      shell: "powershell",
+    });
+    expect(powershell.map((item) => item.command)).toEqual([
+      "Get-NetTCPConnection -State Listen",
+      "Get-NetIPConfiguration",
+    ]);
+
+    const cmd = suggestNextCommands({
+      recentBlocks: ["connection refused on port 8080"],
+      shell: "cmd",
+    });
+    expect(cmd.map((item) => item.command)).toEqual(["netstat -ano", "ipconfig"]);
+  });
+
   it("filters candidates by the exact command prefix while the user is typing", () => {
     const suggestions = suggestNextCommands({
       recentBlocks: [],

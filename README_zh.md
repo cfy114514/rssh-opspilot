@@ -33,7 +33,7 @@
 本分支在现有终端上增加一条安全的本地建议链路：
 
 1. 读取 xterm 已经渲染的命令块和 shell Prompt；
-2. LOCAL 规则针对日志、Spark/YARN、HDFS、Git 工作区、Kubernetes、Docker、systemd 和目录定位生成最多三条只读建议；
+2. LOCAL 规则针对日志、网络/端口、Spark/YARN、HDFS、Git 工作区、Kubernetes、Docker、systemd 和目录定位生成最多三条只读建议；网络提示会按 shell 使用 POSIX 的 `ss`/`ip`、`cmd.exe` 的 `netstat`/`ipconfig` 或 PowerShell 的 `Get-NetTCPConnection`/`Get-NetIPConfiguration`；
 3. 识别到 PowerShell 或 `cmd.exe` Prompt 时使用对应语法；无法确认时保留
    POSIX 默认命令；
 4. 只有识别到 Prompt 时才显示建议；输入中的命令前缀会筛选候选，明确的前缀
