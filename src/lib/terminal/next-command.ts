@@ -139,6 +139,12 @@ const PREFIX_COMPLETIONS: readonly PrefixCompletion[] = [
   },
   {command: "docker ps", reason: "查看当前运行中的容器", confidence: 0.64},
   {command: "docker images", reason: "查看本机已有的容器镜像", confidence: 0.60},
+  {
+    command: "docker logs --tail 100 CONTAINER_NAME",
+    reason: "查看指定容器的最近日志",
+    confidence: 0.62,
+    minPrefixLength: 11,
+  },
   {command: "yarn application -list", reason: "查看当前 YARN 应用及状态", confidence: 0.64, minPrefixLength: 5},
   {
     command: "yarn logs -applicationId APPLICATION_ID | tail -200",
@@ -294,6 +300,15 @@ function kubernetesPodCandidate(text: string): {pod: string; namespace?: string}
   const match = matches[matches.length - 1];
   if (!match?.[1]) return undefined;
   return {pod: match[1], namespace: match[2]};
+}
+
+function dockerContainerCandidate(text: string): string | undefined {
+  const matches = [...text.matchAll(
+    /\bdocker\s+(?:container\s+)?([A-Za-z0-9][A-Za-z0-9_.-]{0,127})\s+is\s+(?:restarting|unhealthy|exited|stopped|dead)\b/gi,
+  )]
+    .map((match) => match[1])
+    .filter(Boolean);
+  return matches[matches.length - 1];
 }
 
 /**
@@ -485,6 +500,15 @@ export function suggestNextCommands(context: NextCommandContext): NextCommandSug
   if (suggestions.length < 3 && /\bdocker(?:\s|$)|docker[_ -]?exec/.test(haystack)) {
     addSuggestion(suggestions, "docker ps", "查看当前运行中的容器", 0.82);
     addSuggestion(suggestions, "docker images", "查看本机已有的容器镜像", 0.75);
+    const dockerContainer = dockerContainerCandidate(recent);
+    if (dockerContainer) {
+      addSuggestion(
+        suggestions,
+        `docker logs --tail 100 ${shellQuote(dockerContainer, shell)}`,
+        "查看指定容器的最近日志",
+        0.70,
+      );
+    }
   }
 
   // Once the user has typed an explicit command prefix, supplement contextual

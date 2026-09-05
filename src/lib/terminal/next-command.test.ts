@@ -137,6 +137,7 @@ describe("suggestNextCommands", () => {
     expect(suggestions.map((item) => item.command)).toEqual([
       "docker ps",
       "docker images",
+      "docker logs --tail 100 api",
     ]);
     expect(suggestions.every((item) => item.risk === "read-only")).toBe(true);
   });
@@ -147,6 +148,14 @@ describe("suggestNextCommands", () => {
       input: "docker p",
     });
     expect(suggestions.map((item) => item.command)).toEqual(["docker ps"]);
+  });
+
+  it("offers a bounded Docker log prefix without surrounding context", () => {
+    const suggestions = suggestNextCommands({
+      recentBlocks: ["ordinary command output"],
+      input: "docker logs --t",
+    });
+    expect(suggestions.map((item) => item.command)).toEqual(["docker logs --tail 100 CONTAINER_NAME"]);
   });
 
   it("suggests read-only systemd service checks", () => {
