@@ -181,6 +181,34 @@ describe("suggestNextCommands", () => {
     expect(cmd.map((item) => item.command)).toEqual(["netstat -ano", "ipconfig"]);
   });
 
+  it("uses shell-aware read-only commands for disk-space diagnostics", () => {
+    const posix = suggestNextCommands({
+      recentBlocks: ["write failed: no space left on device"],
+    });
+    expect(posix.map((item) => item.command)).toEqual([
+      "df -h",
+      "du -sh ./* 2>/dev/null | tail -20",
+    ]);
+
+    const powershell = suggestNextCommands({
+      recentBlocks: ["disk full on the data volume"],
+      shell: "powershell",
+    });
+    expect(powershell.map((item) => item.command)).toEqual([
+      "Get-PSDrive -PSProvider FileSystem",
+      "Get-ChildItem -Force | Sort-Object Length -Descending | Select-Object -First 20",
+    ]);
+
+    const cmd = suggestNextCommands({
+      recentBlocks: ["disk space exhausted"],
+      shell: "cmd",
+    });
+    expect(cmd.map((item) => item.command)).toEqual([
+      "wmic logicaldisk get DeviceID,FreeSpace,Size",
+      "dir /A",
+    ]);
+  });
+
   it("filters candidates by the exact command prefix while the user is typing", () => {
     const suggestions = suggestNextCommands({
       recentBlocks: [],

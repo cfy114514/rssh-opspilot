@@ -180,8 +180,26 @@ export function suggestNextCommands(context: NextCommandContext): NextCommandSug
       addSuggestion(suggestions, "ip addr", "查看本机网络接口地址", 0.75);
     }
   }
+  const diskSignals = /no space left|disk full|out of space|filesystem full|disk usage|disk space|storage full|enospc|quota exceeded/.test(haystack);
+  if (diskSignals) {
+    if (shell === "powershell") {
+      addSuggestion(suggestions, "Get-PSDrive -PSProvider FileSystem", "查看 PowerShell 文件系统剩余空间", 0.82);
+      addSuggestion(
+        suggestions,
+        "Get-ChildItem -Force | Sort-Object Length -Descending | Select-Object -First 20",
+        "查看当前目录中体积最大的项目",
+        0.75,
+      );
+    } else if (shell === "cmd") {
+      addSuggestion(suggestions, "wmic logicaldisk get DeviceID,FreeSpace,Size", "查看 Windows 各磁盘剩余空间", 0.82);
+      addSuggestion(suggestions, "dir /A", "查看当前目录内容和文件体积", 0.75);
+    } else {
+      addSuggestion(suggestions, "df -h", "查看文件系统剩余空间", 0.82);
+      addSuggestion(suggestions, "du -sh ./* 2>/dev/null | tail -20", "查看当前目录中占用空间较大的项目", 0.75);
+    }
+  }
   const logSignals = /\.log\b|\blogs?\b|error|exception|failed|caused by|stack trace/.test(haystack);
-  if (!systemdSignals && !networkSignals && logSignals) {
+  if (!systemdSignals && !networkSignals && !diskSignals && logSignals) {
     if (shell === "powershell") {
       addSuggestion(
         suggestions,

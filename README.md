@@ -36,10 +36,12 @@ The fork adds a safe, local-first suggestion loop to the existing terminal:
 
 1. RSSH observes the command blocks and shell prompt already rendered by xterm.
 2. A deterministic LOCAL predictor proposes up to three read-only commands for
-   common log, network/port, Spark/YARN, HDFS, Git workspace, Kubernetes, Docker,
-   systemd, and directory-orientation situations. Network hints use `ss` and
-   `ip` on POSIX shells, `netstat` and `ipconfig` on `cmd.exe`, and
-   `Get-NetTCPConnection` and `Get-NetIPConfiguration` in PowerShell.
+   common log, network/port, disk-space, Spark/YARN, HDFS, Git workspace,
+   Kubernetes, Docker, systemd, and directory-orientation situations. Network
+   hints use `ss` and `ip` on POSIX shells, `netstat` and `ipconfig` on `cmd.exe`,
+   and `Get-NetTCPConnection` and `Get-NetIPConfiguration` in PowerShell. Disk
+   hints use the corresponding local filesystem and directory inventory commands
+   for each shell.
 3. Recognized PowerShell and `cmd.exe` prompts receive shell-compatible command
    forms; unknown prompts keep the POSIX-compatible defaults.
 4. The palette appears only when a returned prompt is recognized; a typed line
