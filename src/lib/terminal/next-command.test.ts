@@ -56,6 +56,15 @@ describe("suggestNextCommands", () => {
     ]);
   });
 
+  it("filters PowerShell candidates case-insensitively", () => {
+    const suggestions = suggestNextCommands({
+      recentBlocks: [],
+      shell: "powershell",
+      input: " get-",
+    });
+    expect(suggestions.map((item) => item.command)).toEqual(["Get-Location", "Get-ChildItem -Force"]);
+  });
+
   it("uses cmd commands for directory orientation", () => {
     const suggestions = suggestNextCommands({recentBlocks: [], shell: "cmd"});
     expect(suggestions.map((item) => item.command)).toEqual(["cd", "dir /A"]);

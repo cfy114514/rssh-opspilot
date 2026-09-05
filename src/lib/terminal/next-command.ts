@@ -195,8 +195,13 @@ export function suggestNextCommands(context: NextCommandContext): NextCommandSug
   });
   ranked.sort((a, b) => b.confidence - a.confidence);
   const prefix = context.input?.trimStart() ?? "";
+  const caseInsensitive = shell === "cmd" || shell === "powershell";
   const visible = prefix
-    ? ranked.filter((item) => item.command.startsWith(prefix))
+    ? ranked.filter((item) => {
+      const command = caseInsensitive ? item.command.toLocaleLowerCase() : item.command;
+      const input = caseInsensitive ? prefix.toLocaleLowerCase() : prefix;
+      return command.startsWith(input);
+    })
     : ranked;
   return visible.slice(0, 3);
 }

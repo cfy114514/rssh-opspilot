@@ -17,4 +17,12 @@ describe("commandCompletionSuffix", () => {
   it("does not ignore trailing input whitespace when matching a prefix", () => {
     expect(commandCompletionSuffix(" pw ", "pwd")).toBeNull();
   });
+
+  it("supports case-insensitive completion for Windows shell commands", () => {
+    expect(commandCompletionSuffix(" get-", "Get-Location", true)).toBe("Location");
+  });
+
+  it("keeps POSIX completion case-sensitive by default", () => {
+    expect(commandCompletionSuffix("PWD", "pwd")).toBeNull();
+  });
 });

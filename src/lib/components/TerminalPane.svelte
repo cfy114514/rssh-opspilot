@@ -685,7 +685,11 @@
         // Only insert the missing suffix, and abort if the live line is no
         // longer a prefix of this suggestion. Never replace user input.
         if (!prompt) return;
-        const insertion = commandCompletionSuffix(prompt.input, suggestion.command);
+        const insertion = commandCompletionSuffix(
+            prompt.input,
+            suggestion.command,
+            prompt.shell === "cmd" || prompt.shell === "powershell",
+        );
         if (insertion === null) return;
         const scope = nextCommandScope;
         if (scope) {
