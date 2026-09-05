@@ -206,6 +206,31 @@ describe("suggestNextCommands", () => {
     }).map((item) => item.command)).toEqual(["Get-Location", "Get-ChildItem -Force"]);
   });
 
+  it("offers resource prefixes only in their matching shell", () => {
+    expect(suggestNextCommands({
+      recentBlocks: ["ordinary command output"],
+      input: "df",
+    }).map((item) => item.command)).toEqual(["df -h"]);
+    expect(suggestNextCommands({
+      recentBlocks: ["ordinary command output"],
+      shell: "powershell",
+      input: "get-pro",
+    }).map((item) => item.command)).toEqual([
+      "Get-Process | Sort-Object WorkingSet64 -Descending | Select-Object -First 20",
+      "Get-Process | Sort-Object CPU -Descending | Select-Object -First 20",
+    ]);
+    expect(suggestNextCommands({
+      recentBlocks: ["ordinary command output"],
+      shell: "cmd",
+      input: "task",
+    }).map((item) => item.command)).toEqual(["tasklist /FO TABLE"]);
+    expect(suggestNextCommands({
+      recentBlocks: ["ordinary command output"],
+      shell: "powershell",
+      input: "df",
+    }).map((item) => item.command)).toEqual([]);
+  });
+
   it("uses shell-aware read-only commands for disk-space diagnostics", () => {
     const posix = suggestNextCommands({
       recentBlocks: ["write failed: no space left on device"],
