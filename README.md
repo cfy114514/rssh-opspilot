@@ -41,7 +41,8 @@ The fork adds a safe, local-first suggestion loop to the existing terminal:
    hints use `ss` and `ip` on POSIX shells, `netstat` and `ipconfig` on `cmd.exe`,
    and `Get-NetTCPConnection` and `Get-NetIPConfiguration` in PowerShell. Disk
    hints use the corresponding local filesystem, directory, process, and system
-   load inventory commands for each shell.
+   load inventory commands for each shell. Spark/YARN and HDFS log/size
+   pipelines likewise use the detected shell's filtering and sorting syntax.
 3. Recognized PowerShell and `cmd.exe` prompts receive shell-compatible command
    forms; unknown prompts keep the POSIX-compatible defaults.
 4. The palette appears only when a returned prompt is recognized; a typed line

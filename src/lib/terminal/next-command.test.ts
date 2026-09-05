@@ -246,6 +246,83 @@ describe("suggestNextCommands", () => {
     }).map((item) => item.command)).toEqual(["kubectl get namespaces"]);
   });
 
+  it("keeps systemd prefixes and context suggestions in POSIX shells", () => {
+    expect(suggestNextCommands({
+      recentBlocks: ["ordinary command output"],
+      input: "systemctl --f",
+    }).map((item) => item.command)).toEqual(["systemctl --failed --no-legend"]);
+    expect(suggestNextCommands({
+      shell: "powershell",
+      recentBlocks: ["systemd service failed"],
+      input: "systemctl",
+    }).map((item) => item.command)).toEqual([]);
+    expect(suggestNextCommands({
+      shell: "cmd",
+      recentBlocks: ["systemctl service failed"],
+      input: "systemctl",
+    }).map((item) => item.command)).toEqual([]);
+  });
+
+  it("uses shell-compatible YARN log pipelines", () => {
+    expect(suggestNextCommands({
+      recentBlocks: ["spark application pending"],
+    }).map((item) => item.command)).toEqual([
+      "yarn application -list",
+      "yarn logs -applicationId APPLICATION_ID | tail -200",
+    ]);
+    expect(suggestNextCommands({
+      shell: "powershell",
+      recentBlocks: ["spark application pending"],
+    }).map((item) => item.command)).toEqual([
+      "yarn application -list",
+      "yarn logs -applicationId APPLICATION_ID | Select-Object -Last 200",
+    ]);
+    expect(suggestNextCommands({
+      shell: "cmd",
+      recentBlocks: ["spark application pending"],
+    }).map((item) => item.command)).toEqual([
+      "yarn application -list",
+      "yarn logs -applicationId APPLICATION_ID | findstr /I /N \"ERROR Exception failed\"",
+    ]);
+    expect(suggestNextCommands({
+      shell: "powershell",
+      recentBlocks: ["ordinary command output"],
+      input: "yarn l",
+    }).map((item) => item.command)).toEqual([
+      "yarn logs -applicationId APPLICATION_ID | Select-Object -Last 200",
+    ]);
+    expect(suggestNextCommands({
+      shell: "cmd",
+      recentBlocks: ["ordinary command output"],
+      input: "yarn l",
+    }).map((item) => item.command)).toEqual([
+      "yarn logs -applicationId APPLICATION_ID | findstr /I /N \"ERROR Exception failed\"",
+    ]);
+  });
+
+  it("uses shell-compatible HDFS size pipelines", () => {
+    expect(suggestNextCommands({
+      recentBlocks: ["hdfs namenode reports a large directory"],
+    }).map((item) => item.command)).toEqual([
+      "hdfs dfs -ls -h .",
+      "hdfs dfs -du -h . | sort -h | tail -20",
+    ]);
+    expect(suggestNextCommands({
+      shell: "powershell",
+      recentBlocks: ["hdfs namenode reports a large directory"],
+    }).map((item) => item.command)).toEqual([
+      "hdfs dfs -ls -h .",
+      "hdfs dfs -du -h . | Sort-Object | Select-Object -Last 20",
+    ]);
+    expect(suggestNextCommands({
+      shell: "cmd",
+      recentBlocks: ["hdfs namenode reports a large directory"],
+    }).map((item) => item.command)).toEqual([
+      "hdfs dfs -ls -h .",
+      "hdfs dfs -du -h .",
+    ]);
+  });
+
   it("uses shell-aware read-only commands for disk-space diagnostics", () => {
     const posix = suggestNextCommands({
       recentBlocks: ["write failed: no space left on device"],

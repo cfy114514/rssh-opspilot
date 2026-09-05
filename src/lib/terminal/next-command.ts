@@ -135,9 +135,24 @@ const PREFIX_COMPLETIONS: readonly PrefixCompletion[] = [
   {command: "docker images", reason: "查看本机已有的容器镜像", confidence: 0.60},
   {command: "yarn application -list", reason: "查看当前 YARN 应用及状态", confidence: 0.64, minPrefixLength: 5},
   {
-    command: "yarn logs -applicationId <application_id> | tail -200",
+    command: "yarn logs -applicationId APPLICATION_ID | tail -200",
     reason: "按应用汇总最近日志",
     confidence: 0.60,
+    shells: ["posix"],
+    minPrefixLength: 5,
+  },
+  {
+    command: "yarn logs -applicationId APPLICATION_ID | Select-Object -Last 200",
+    reason: "按应用汇总最近日志",
+    confidence: 0.60,
+    shells: ["powershell"],
+    minPrefixLength: 5,
+  },
+  {
+    command: "yarn logs -applicationId APPLICATION_ID | findstr /I /N \"ERROR Exception failed\"",
+    reason: "筛选 YARN 日志中的错误行",
+    confidence: 0.60,
+    shells: ["cmd"],
     minPrefixLength: 5,
   },
   {command: "hdfs dfs -ls -h .", reason: "确认当前 HDFS 目录内容", confidence: 0.64, minPrefixLength: 8},
@@ -145,13 +160,34 @@ const PREFIX_COMPLETIONS: readonly PrefixCompletion[] = [
     command: "hdfs dfs -du -h . | sort -h | tail -20",
     reason: "定位当前 HDFS 目录的大对象",
     confidence: 0.60,
+    shells: ["posix"],
     minPrefixLength: 8,
   },
-  {command: "systemctl --failed --no-legend", reason: "查看失败的 systemd 服务", confidence: 0.64},
+  {
+    command: "hdfs dfs -du -h . | Sort-Object | Select-Object -Last 20",
+    reason: "定位当前 HDFS 目录的大对象",
+    confidence: 0.60,
+    shells: ["powershell"],
+    minPrefixLength: 8,
+  },
+  {
+    command: "hdfs dfs -du -h .",
+    reason: "查看当前 HDFS 目录的空间占用",
+    confidence: 0.60,
+    shells: ["cmd"],
+    minPrefixLength: 8,
+  },
+  {
+    command: "systemctl --failed --no-legend",
+    reason: "查看失败的 systemd 服务",
+    confidence: 0.64,
+    shells: ["posix"],
+  },
   {
     command: "systemctl list-units --type=service --state=running --no-legend",
     reason: "查看正在运行的 systemd 服务",
     confidence: 0.60,
+    shells: ["posix"],
   },
   {command: "ss -lntp", reason: "查看正在监听的 TCP 端口", confidence: 0.64, shells: ["posix"], minPrefixLength: 2},
   {command: "ip addr", reason: "查看本机网络接口地址", confidence: 0.60, shells: ["posix"], minPrefixLength: 2},
@@ -247,7 +283,7 @@ export function suggestNextCommands(context: NextCommandContext): NextCommandSug
 
   const log = shellQuote(logCandidate(context, recent), shell);
   const systemdSignals = /\bsystemctl(?:\s|$)|\bsystemd\b/.test(haystack);
-  if (systemdSignals) {
+  if (systemdSignals && shell === "posix") {
     addSuggestion(suggestions, "systemctl --failed --no-legend", "查看失败的 systemd 服务", 0.82);
     addSuggestion(
       suggestions,
@@ -366,12 +402,24 @@ export function suggestNextCommands(context: NextCommandContext): NextCommandSug
 
   if (suggestions.length < 3 && /spark|yarn application|application[_ -]?id/.test(haystack)) {
     addSuggestion(suggestions, "yarn application -list", "查看当前 YARN 应用及状态", 0.83);
-    addSuggestion(suggestions, "yarn logs -applicationId <application_id> | tail -200", "按应用汇总最近日志", 0.78);
+    if (shell === "powershell") {
+      addSuggestion(suggestions, "yarn logs -applicationId APPLICATION_ID | Select-Object -Last 200", "按应用汇总最近日志", 0.78);
+    } else if (shell === "cmd") {
+      addSuggestion(suggestions, "yarn logs -applicationId APPLICATION_ID | findstr /I /N \"ERROR Exception failed\"", "筛选 YARN 日志中的错误行", 0.78);
+    } else {
+      addSuggestion(suggestions, "yarn logs -applicationId APPLICATION_ID | tail -200", "按应用汇总最近日志", 0.78);
+    }
   }
 
   if (suggestions.length < 3 && /hdfs|namenode|datanode|data[ -]?node/.test(haystack)) {
     addSuggestion(suggestions, "hdfs dfs -ls -h .", "确认当前 HDFS 目录内容", 0.82);
-    addSuggestion(suggestions, "hdfs dfs -du -h . | sort -h | tail -20", "定位当前目录的大对象", 0.75);
+    if (shell === "powershell") {
+      addSuggestion(suggestions, "hdfs dfs -du -h . | Sort-Object | Select-Object -Last 20", "定位当前 HDFS 目录的大对象", 0.75);
+    } else if (shell === "cmd") {
+      addSuggestion(suggestions, "hdfs dfs -du -h .", "查看当前 HDFS 目录的空间占用", 0.75);
+    } else {
+      addSuggestion(suggestions, "hdfs dfs -du -h . | sort -h | tail -20", "定位当前 HDFS 目录的大对象", 0.75);
+    }
   }
 
   if (suggestions.length < 3 && /\bgit(?:\s|$)|\.git(?:[\\/]|$)/.test(haystack)) {
