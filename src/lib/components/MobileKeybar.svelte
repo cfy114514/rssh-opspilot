@@ -5,6 +5,9 @@
     import { t, errMsg } from "../i18n/index.svelte.ts";
     import AppIcon from "./AppIcon.svelte";
     import { onDestroy } from "svelte";
+    import {routeMobileTab} from "../terminal/mobile-tab-routing.ts";
+
+    let {onTabCompletion = null}: {onTabCompletion?: (() => boolean) | null} = $props();
 
     function prevent(e: Event) { e.preventDefault(); }
 
@@ -48,6 +51,14 @@
     function send(seq: string) {
         app.sendToTerminal(seq);
         app.clearModifiers();
+    }
+
+    function sendTab() {
+        routeMobileTab(
+            onTabCompletion?.() ?? false,
+            () => app.clearModifiers(),
+            () => send("\t"),
+        );
     }
 
     function arrow(dir: app.ArrowDir) {
@@ -121,7 +132,7 @@
         onpointerleave={() => clearModTimer("alt")}
         onpointercancel={() => cancelPress("alt")}>Alt</button>
     <button class="key" onpointerdown={prevent} onclick={() => send('\x1b')}>Esc</button>
-    <button class="key" onpointerdown={prevent} onclick={() => send('\t')}>Tab</button>
+    <button class="key" onpointerdown={prevent} onclick={sendTab}>Tab</button>
     <button class="key" onpointerdown={prevent} onclick={() => arrow('A')}>↑</button>
     <button class="key" onpointerdown={prevent} onclick={() => arrow('B')}>↓</button>
     <button class="key" onpointerdown={prevent} onclick={() => arrow('D')}>←</button>

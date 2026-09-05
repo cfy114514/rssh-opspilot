@@ -704,6 +704,17 @@
         terminal.input(insertion);
     }
 
+    function acceptNextCommandFromMobile(): boolean {
+        const suggestion = nextCommandSuggestions[0];
+        if (!suggestion) return false;
+        // The mobile button must consume Tab whenever a visible suggestion was
+        // offered. acceptNextCommand re-checks the live line and may safely
+        // decline stale input; falling back to shell Tab here could otherwise
+        // trigger an unrelated native completion on that stale line.
+        acceptNextCommand(suggestion);
+        return true;
+    }
+
     function currentOpsPilotScope(host: string | undefined, cwd: string | undefined): OpsPilotFeedbackScope | null {
         if (!opsPilotTarget) return null;
         return {
@@ -2310,7 +2321,7 @@
         />
     {/if}
     {#if app.isMobile}
-        <MobileKeybar />
+        <MobileKeybar onTabCompletion={acceptNextCommandFromMobile} />
     {/if}
 </div>
 
