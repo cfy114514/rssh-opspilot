@@ -209,6 +209,34 @@ describe("suggestNextCommands", () => {
     ]);
   });
 
+  it("uses shell-aware read-only commands for memory diagnostics", () => {
+    const posix = suggestNextCommands({
+      recentBlocks: ["service was killed by the OOM killer"],
+    });
+    expect(posix.map((item) => item.command)).toEqual([
+      "free -h",
+      "ps aux | sort -nrk 4 | head -20",
+    ]);
+
+    const powershell = suggestNextCommands({
+      recentBlocks: ["memory pressure is high"],
+      shell: "powershell",
+    });
+    expect(powershell.map((item) => item.command)).toEqual([
+      "Get-CimInstance Win32_OperatingSystem | Select-Object FreePhysicalMemory,TotalVisibleMemorySize",
+      "Get-Process | Sort-Object WorkingSet64 -Descending | Select-Object -First 20",
+    ]);
+
+    const cmd = suggestNextCommands({
+      recentBlocks: ["out of memory while starting worker"],
+      shell: "cmd",
+    });
+    expect(cmd.map((item) => item.command)).toEqual([
+      "wmic OS get FreePhysicalMemory,TotalVisibleMemorySize",
+      "tasklist /FO TABLE",
+    ]);
+  });
+
   it("filters candidates by the exact command prefix while the user is typing", () => {
     const suggestions = suggestNextCommands({
       recentBlocks: [],

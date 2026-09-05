@@ -198,8 +198,31 @@ export function suggestNextCommands(context: NextCommandContext): NextCommandSug
       addSuggestion(suggestions, "du -sh ./* 2>/dev/null | tail -20", "查看当前目录中占用空间较大的项目", 0.75);
     }
   }
+  const memorySignals = /out of memory|oom(?:\s+killer|\s+killed)?|memory pressure|memory exhausted|insufficient memory|cannot allocate memory|killed process/.test(haystack);
+  if (memorySignals) {
+    if (shell === "powershell") {
+      addSuggestion(
+        suggestions,
+        "Get-CimInstance Win32_OperatingSystem | Select-Object FreePhysicalMemory,TotalVisibleMemorySize",
+        "查看 PowerShell 可用和总物理内存",
+        0.82,
+      );
+      addSuggestion(
+        suggestions,
+        "Get-Process | Sort-Object WorkingSet64 -Descending | Select-Object -First 20",
+        "查看占用内存最多的进程",
+        0.75,
+      );
+    } else if (shell === "cmd") {
+      addSuggestion(suggestions, "wmic OS get FreePhysicalMemory,TotalVisibleMemorySize", "查看 Windows 可用和总物理内存", 0.82);
+      addSuggestion(suggestions, "tasklist /FO TABLE", "查看当前进程列表", 0.75);
+    } else {
+      addSuggestion(suggestions, "free -h", "查看可用和总内存", 0.82);
+      addSuggestion(suggestions, "ps aux | sort -nrk 4 | head -20", "查看占用内存最多的进程", 0.75);
+    }
+  }
   const logSignals = /\.log\b|\blogs?\b|error|exception|failed|caused by|stack trace/.test(haystack);
-  if (!systemdSignals && !networkSignals && !diskSignals && logSignals) {
+  if (!systemdSignals && !networkSignals && !diskSignals && !memorySignals && logSignals) {
     if (shell === "powershell") {
       addSuggestion(
         suggestions,
