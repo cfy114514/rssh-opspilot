@@ -6,6 +6,7 @@ describe("parsePromptLine", () => {
     expect(parsePromptLine("root@bdp-dc-004:/home/bdp/app/core/logs#")).toEqual({
       prompt: "root@bdp-dc-004:/home/bdp/app/core/logs#",
       input: "",
+      shell: "posix",
       host: "bdp-dc-004",
       cwd: "/home/bdp/app/core/logs",
     });
@@ -15,6 +16,11 @@ describe("parsePromptLine", () => {
     const parsed = parsePromptLine("PS C:\\Users\\alice> Get-Process");
     expect(parsed?.cwd).toBe("C:\\Users\\alice");
     expect(parsed?.input).toBe(" Get-Process");
+    expect(parsed?.shell).toBe("powershell");
+  });
+
+  it("classifies a drive-letter prompt as cmd", () => {
+    expect(parsePromptLine("C:\\Users\\alice>")).toMatchObject({shell: "cmd"});
   });
 
   it("rejects an arbitrary output line", () => {
@@ -40,6 +46,19 @@ describe("suggestNextCommands", () => {
     const suggestions = suggestNextCommands({recentBlocks: []});
     expect(suggestions.map((item) => item.command)).toEqual(["pwd", "ls -lah"]);
     expect(suggestions.some((item) => item.command.includes("ssh"))).toBe(false);
+  });
+
+  it("uses PowerShell commands for directory orientation", () => {
+    const suggestions = suggestNextCommands({recentBlocks: [], shell: "powershell"});
+    expect(suggestions.map((item) => item.command)).toEqual([
+      "Get-Location",
+      "Get-ChildItem -Force",
+    ]);
+  });
+
+  it("uses cmd commands for directory orientation", () => {
+    const suggestions = suggestNextCommands({recentBlocks: [], shell: "cmd"});
+    expect(suggestions.map((item) => item.command)).toEqual(["cd", "dir /A"]);
   });
 
   it("filters candidates by the exact command prefix while the user is typing", () => {

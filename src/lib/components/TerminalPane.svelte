@@ -861,6 +861,7 @@
             const context = {
                 promptLine: line,
                 input: prompt.input,
+                shell: prompt.shell,
                 cwd: prompt.cwd,
                 host: prompt.host,
                 recentBlocks,

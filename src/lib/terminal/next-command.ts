@@ -5,11 +5,15 @@ export interface NextCommandContext {
   readonly promptLine?: string;
   /** Current line input after the prompt, used only for local prefix filtering. */
   readonly input?: string;
+  /** Shell family inferred from the visible prompt when available. */
+  readonly shell?: NextCommandShell;
   readonly cwd?: string;
   readonly host?: string;
   readonly recentBlocks: readonly string[];
   readonly feedback?: Readonly<Record<string, {accepted: number; dismissed: number}>>;
 }
+
+export type NextCommandShell = "posix" | "cmd" | "powershell";
 
 export type NextCommandRisk = "read-only" | "state-changing" | "destructive";
 
@@ -25,8 +29,15 @@ export interface NextCommandSuggestion {
 export interface PromptContext {
   readonly prompt: string;
   readonly input: string;
+  readonly shell: NextCommandShell;
   readonly host?: string;
   readonly cwd?: string;
+}
+
+function shellForPrompt(prompt: string): NextCommandShell {
+  if (/^PS(?:\s|$)/i.test(prompt)) return "powershell";
+  if (/^(?:[A-Za-z]:\\|\\\\)/.test(prompt)) return "cmd";
+  return "posix";
 }
 
 /**
@@ -65,7 +76,7 @@ export function parsePromptLine(line: string): PromptContext | null {
     cwd = path?.[1]?.trim() || undefined;
   }
 
-  return {prompt, input, host, cwd};
+  return {prompt, input, shell: shellForPrompt(prompt), host, cwd};
 }
 
 function shellQuote(value: string): string {
@@ -117,19 +128,39 @@ function logCandidate(context: NextCommandContext, text: string): string {
 export function suggestNextCommands(context: NextCommandContext): NextCommandSuggestion[] {
   const recent = context.recentBlocks.slice(-4).join("\n");
   const haystack = `${context.cwd ?? ""}\n${context.promptLine ?? ""}\n${recent}`.toLowerCase();
+  const shell = context.shell ?? "posix";
   const suggestions: NextCommandSuggestion[] = [];
 
   const log = shellQuote(logCandidate(context, recent));
   const logSignals = /\.log\b|\blogs?\b|error|exception|failed|caused by|stack trace/.test(haystack);
   if (logSignals) {
-    addSuggestion(
-      suggestions,
-      `grep -nEi 'error|exception|failed|caused by' ${log} | tail -100`,
-      "扫描最近日志中的错误与异常链",
-      0.91,
-    );
-    addSuggestion(suggestions, `tail -n 100 ${log}`, "先查看最新日志尾部", 0.84);
-    addSuggestion(suggestions, `tail -F ${log}`, "持续跟踪后续日志输出", 0.76);
+    if (shell === "powershell") {
+      addSuggestion(
+        suggestions,
+        `Select-String -Path ${log} -Pattern 'error|exception|failed|caused by' | Select-Object -Last 100`,
+        "扫描最近日志中的错误与异常链",
+        0.91,
+      );
+      addSuggestion(suggestions, `Get-Content -Tail 100 ${log}`, "先查看最新日志尾部", 0.84);
+      addSuggestion(suggestions, `Get-Content -Wait -Tail 100 ${log}`, "持续跟踪后续日志输出", 0.76);
+    } else if (shell === "cmd") {
+      addSuggestion(
+        suggestions,
+        `findstr /I /N "error exception failed caused by" ${log}`,
+        "扫描最近日志中的错误与异常链",
+        0.91,
+      );
+      addSuggestion(suggestions, `more ${log}`, "分页查看日志内容", 0.78);
+    } else {
+      addSuggestion(
+        suggestions,
+        `grep -nEi 'error|exception|failed|caused by' ${log} | tail -100`,
+        "扫描最近日志中的错误与异常链",
+        0.91,
+      );
+      addSuggestion(suggestions, `tail -n 100 ${log}`, "先查看最新日志尾部", 0.84);
+      addSuggestion(suggestions, `tail -F ${log}`, "持续跟踪后续日志输出", 0.76);
+    }
   }
 
   if (suggestions.length < 3 && /spark|yarn application|application[_ -]?id/.test(haystack)) {
@@ -143,8 +174,16 @@ export function suggestNextCommands(context: NextCommandContext): NextCommandSug
   }
 
   if (suggestions.length === 0) {
-    addSuggestion(suggestions, "pwd", "确认当前工作目录", context.cwd ? 0.72 : 0.62);
-    addSuggestion(suggestions, "ls -lah", "查看当前目录的文件与时间", 0.59);
+    if (shell === "powershell") {
+      addSuggestion(suggestions, "Get-Location", "确认当前工作目录", context.cwd ? 0.72 : 0.62);
+      addSuggestion(suggestions, "Get-ChildItem -Force", "查看当前目录的文件与时间", 0.59);
+    } else if (shell === "cmd") {
+      addSuggestion(suggestions, "cd", "确认当前工作目录", context.cwd ? 0.72 : 0.62);
+      addSuggestion(suggestions, "dir /A", "查看当前目录的文件与时间", 0.59);
+    } else {
+      addSuggestion(suggestions, "pwd", "确认当前工作目录", context.cwd ? 0.72 : 0.62);
+      addSuggestion(suggestions, "ls -lah", "查看当前目录的文件与时间", 0.59);
+    }
   }
 
   const feedback = context.feedback ?? {};
