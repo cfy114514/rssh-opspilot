@@ -230,6 +230,13 @@ describe("suggestNextCommands", () => {
     expect(suggestions[0]?.command).toBe("ss -lntp 'sport = :8080'");
   });
 
+  it("extracts a port from a remote host name", () => {
+    const suggestions = suggestNextCommands({
+      recentBlocks: ["connection refused on api.internal:8443"],
+    });
+    expect(suggestions[0]?.command).toBe("ss -lntp 'sport = :8443'");
+  });
+
   it("offers shell-aware network prefixes without broad get- pollution", () => {
     expect(suggestNextCommands({
       recentBlocks: ["ordinary command output"],

@@ -314,7 +314,7 @@ function dockerContainerCandidate(text: string): string | undefined {
 
 function networkPortCandidate(text: string): string | undefined {
   const matches = [...text.matchAll(
-    /\bport\s*(?:number\s*)?(?:[:=]\s*)?(\d{1,5})\b|(?:localhost|127(?:\.\d{1,3}){3}|::1|\[[0-9a-f:]+\]):(\d{1,5})\b/gi,
+    /\bport\s*(?:number\s*)?(?:[:=]\s*)?(\d{1,5})\b|(?:[A-Za-z0-9][A-Za-z0-9.-]*|localhost|127(?:\.\d{1,3}){3}|::1|\[[0-9a-f:]+\]):(\d{1,5})\b/gi,
   )]
     .map((match) => match[1] ?? match[2])
     .filter(Boolean);
