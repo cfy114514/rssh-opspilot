@@ -252,6 +252,10 @@ describe("suggestNextCommands", () => {
       input: "systemctl --f",
     }).map((item) => item.command)).toEqual(["systemctl --failed --no-legend"]);
     expect(suggestNextCommands({
+      recentBlocks: ["ordinary command output"],
+      input: "systemctl s",
+    }).map((item) => item.command)).toEqual(["systemctl status SERVICE_NAME --no-pager"]);
+    expect(suggestNextCommands({
       shell: "powershell",
       recentBlocks: ["systemd service failed"],
       input: "systemctl",
@@ -261,6 +265,17 @@ describe("suggestNextCommands", () => {
       recentBlocks: ["systemctl service failed"],
       input: "systemctl",
     }).map((item) => item.command)).toEqual([]);
+  });
+
+  it("adds a service-specific systemd check when a unit name is visible", () => {
+    const suggestions = suggestNextCommands({
+      recentBlocks: ["systemctl --failed\nfailed: api-worker@blue.service"],
+    });
+    expect(suggestions.map((item) => item.command)).toEqual([
+      "systemctl --failed --no-legend",
+      "systemctl list-units --type=service --state=running --no-legend",
+      "systemctl status api-worker@blue.service --no-pager",
+    ]);
   });
 
   it("uses shell-compatible YARN log pipelines", () => {

@@ -189,6 +189,13 @@ const PREFIX_COMPLETIONS: readonly PrefixCompletion[] = [
     confidence: 0.60,
     shells: ["posix"],
   },
+  {
+    command: "systemctl status SERVICE_NAME --no-pager",
+    reason: "查看指定 systemd 服务状态和最近输出",
+    confidence: 0.62,
+    shells: ["posix"],
+    minPrefixLength: 5,
+  },
   {command: "ss -lntp", reason: "查看正在监听的 TCP 端口", confidence: 0.64, shells: ["posix"], minPrefixLength: 2},
   {command: "ip addr", reason: "查看本机网络接口地址", confidence: 0.60, shells: ["posix"], minPrefixLength: 2},
   {command: "netstat -ano", reason: "查看 Windows 连接和监听端口", confidence: 0.64, shells: ["cmd"], minPrefixLength: 3},
@@ -267,6 +274,13 @@ function logCandidate(context: NextCommandContext, text: string): string {
   return "app.log";
 }
 
+function systemdUnitCandidate(text: string): string | undefined {
+  const matches = [...text.matchAll(/\b([A-Za-z0-9][A-Za-z0-9_.@:-]*\.service)\b/g)]
+    .map((match) => match[1])
+    .filter(Boolean);
+  return matches[matches.length - 1];
+}
+
 /**
  * Deterministic LOCAL predictor. It intentionally emits only bounded,
  * read-only commands and never executes or probes a server. The later ONLINE
@@ -283,6 +297,7 @@ export function suggestNextCommands(context: NextCommandContext): NextCommandSug
 
   const log = shellQuote(logCandidate(context, recent), shell);
   const systemdSignals = /\bsystemctl(?:\s|$)|\bsystemd\b/.test(haystack);
+  const systemdUnit = systemdSignals ? systemdUnitCandidate(recent) : undefined;
   if (systemdSignals && shell === "posix") {
     addSuggestion(suggestions, "systemctl --failed --no-legend", "查看失败的 systemd 服务", 0.82);
     addSuggestion(
@@ -291,6 +306,14 @@ export function suggestNextCommands(context: NextCommandContext): NextCommandSug
       "查看正在运行的 systemd 服务",
       0.75,
     );
+    if (systemdUnit) {
+      addSuggestion(
+        suggestions,
+        `systemctl status ${shellQuote(systemdUnit, shell)} --no-pager`,
+        "查看指定 systemd 服务状态和最近输出",
+        0.70,
+      );
+    }
   }
   const networkSignals = /connection refused|address already in use|\bport\s+\d+|\blistening\b|\bsocket\b|\b(?:ss|netstat|ipconfig)\b|get-nettcpconnection|network/.test(haystack);
   if (networkSignals) {
