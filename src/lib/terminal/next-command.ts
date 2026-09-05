@@ -129,6 +129,7 @@ type PrefixCompletion = {
 const PREFIX_COMPLETIONS: readonly PrefixCompletion[] = [
   {command: "git status --short", reason: "确认当前工作区改动", confidence: 0.64},
   {command: "git diff --stat", reason: "快速查看改动规模", confidence: 0.60},
+  {command: "git log --oneline -20", reason: "查看最近的提交历史", confidence: 0.60, minPrefixLength: 5},
   {command: "kubectl get pods", reason: "查看当前命名空间中的 Pod 状态", confidence: 0.64},
   {command: "kubectl get namespaces", reason: "查看可用的 Kubernetes 命名空间", confidence: 0.60},
   {

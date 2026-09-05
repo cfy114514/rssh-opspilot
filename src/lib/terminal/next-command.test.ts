@@ -102,6 +102,14 @@ describe("suggestNextCommands", () => {
     expect(suggestions.map((item) => item.command)).toEqual(["git status --short"]);
   });
 
+  it("offers a bounded Git history prefix without surrounding context", () => {
+    const suggestions = suggestNextCommands({
+      recentBlocks: ["ordinary command output"],
+      input: "git log",
+    });
+    expect(suggestions.map((item) => item.command)).toEqual(["git log --oneline -20"]);
+  });
+
   it("suggests read-only Kubernetes orientation commands", () => {
     const suggestions = suggestNextCommands({
       recentBlocks: ["kubectl describe pod api-7d9c -n production"],
