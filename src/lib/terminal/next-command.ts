@@ -157,8 +157,18 @@ export function suggestNextCommands(context: NextCommandContext): NextCommandSug
   const suggestions: NextCommandSuggestion[] = [];
 
   const log = shellQuote(logCandidate(context, recent), shell);
+  const systemdSignals = /\bsystemctl(?:\s|$)|\bsystemd\b/.test(haystack);
+  if (systemdSignals) {
+    addSuggestion(suggestions, "systemctl --failed --no-legend", "查看失败的 systemd 服务", 0.82);
+    addSuggestion(
+      suggestions,
+      "systemctl list-units --type=service --state=running --no-legend",
+      "查看正在运行的 systemd 服务",
+      0.75,
+    );
+  }
   const logSignals = /\.log\b|\blogs?\b|error|exception|failed|caused by|stack trace/.test(haystack);
-  if (logSignals) {
+  if (!systemdSignals && logSignals) {
     if (shell === "powershell") {
       addSuggestion(
         suggestions,
@@ -211,16 +221,6 @@ export function suggestNextCommands(context: NextCommandContext): NextCommandSug
   if (suggestions.length < 3 && /\bdocker(?:\s|$)|docker[_ -]?exec/.test(haystack)) {
     addSuggestion(suggestions, "docker ps", "查看当前运行中的容器", 0.82);
     addSuggestion(suggestions, "docker images", "查看本机已有的容器镜像", 0.75);
-  }
-
-  if (suggestions.length < 3 && /\bsystemctl(?:\s|$)|\bsystemd\b/.test(haystack)) {
-    addSuggestion(suggestions, "systemctl --failed --no-legend", "查看失败的 systemd 服务", 0.82);
-    addSuggestion(
-      suggestions,
-      "systemctl list-units --type=service --state=running --no-legend",
-      "查看正在运行的 systemd 服务",
-      0.75,
-    );
   }
 
   // Once the user has typed an explicit command prefix, supplement contextual

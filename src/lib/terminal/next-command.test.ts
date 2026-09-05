@@ -152,6 +152,13 @@ describe("suggestNextCommands", () => {
     expect(suggestions.every((item) => item.risk === "read-only")).toBe(true);
   });
 
+  it("prioritizes systemd checks when service failure text also matches log signals", () => {
+    const suggestions = suggestNextCommands({
+      recentBlocks: ["systemctl --failed\nfailed: api.service"],
+    });
+    expect(suggestions[0].command).toBe("systemctl --failed --no-legend");
+  });
+
   it("filters candidates by the exact command prefix while the user is typing", () => {
     const suggestions = suggestNextCommands({
       recentBlocks: [],
