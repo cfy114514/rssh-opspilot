@@ -44,8 +44,13 @@ const ALWAYS_REJECT = [
   /-----BEGIN [A-Z ]*PRIVATE KEY-----/i,
   /(?:^|\s)sshpass\s+-p(?:\s|=)/i,
   /(?:^|\s)--(?:password|passwd|token|secret)(?:\s|=)/i,
-  /(?:^|\s)authorization\s*:/i,
+  /\bauthorization\s*:/i,
 ] as const;
+
+/** Shared fail-closed gate for command text crossing a persistence boundary. */
+export function containsRejectedCommandData(command: string): boolean {
+  return ALWAYS_REJECT.some((pattern) => pattern.test(command));
+}
 
 function nonEmptyString(value: unknown): value is string {
   return typeof value === "string" && value.length > 0;
@@ -126,7 +131,7 @@ export function extractOpsPilotCommandObservation(
   if (!commandContext) return null;
 
   const rawCommand = commandContext.input.trim();
-  if (!rawCommand || ALWAYS_REJECT.some((pattern) => pattern.test(rawCommand))) return null;
+  if (!rawCommand || containsRejectedCommandData(rawCommand)) return null;
 
   let redacted: string;
   try {
