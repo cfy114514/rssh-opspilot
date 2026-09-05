@@ -173,6 +173,11 @@ export function suggestNextCommands(context: NextCommandContext): NextCommandSug
     addSuggestion(suggestions, "hdfs dfs -du -h . | sort -h | tail -20", "定位当前目录的大对象", 0.75);
   }
 
+  if (suggestions.length < 3 && /\bgit(?:\s|$)|\.git(?:[\\/]|$)/.test(haystack)) {
+    addSuggestion(suggestions, "git status --short", "确认当前工作区改动", 0.82);
+    addSuggestion(suggestions, "git diff --stat", "快速查看改动规模", 0.75);
+  }
+
   if (suggestions.length === 0) {
     if (shell === "powershell") {
       addSuggestion(suggestions, "Get-Location", "确认当前工作目录", context.cwd ? 0.72 : 0.62);

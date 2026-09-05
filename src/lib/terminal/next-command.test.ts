@@ -70,6 +70,26 @@ describe("suggestNextCommands", () => {
     expect(suggestions.map((item) => item.command)).toEqual(["cd", "dir /A"]);
   });
 
+  it("suggests read-only Git workspace orientation commands", () => {
+    const suggestions = suggestNextCommands({
+      cwd: "/srv/repository",
+      recentBlocks: ["git status --porcelain"],
+    });
+    expect(suggestions.map((item) => item.command)).toEqual([
+      "git status --short",
+      "git diff --stat",
+    ]);
+    expect(suggestions.every((item) => item.risk === "read-only")).toBe(true);
+  });
+
+  it("filters Git suggestions by a typed command prefix", () => {
+    const suggestions = suggestNextCommands({
+      recentBlocks: ["git branch --show-current"],
+      input: "git s",
+    });
+    expect(suggestions.map((item) => item.command)).toEqual(["git status --short"]);
+  });
+
   it("filters candidates by the exact command prefix while the user is typing", () => {
     const suggestions = suggestNextCommands({
       recentBlocks: [],
