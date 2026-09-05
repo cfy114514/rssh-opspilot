@@ -262,6 +262,34 @@ describe("suggestNextCommands", () => {
     ]);
   });
 
+  it("uses shell-aware read-only commands for CPU diagnostics", () => {
+    const posix = suggestNextCommands({
+      recentBlocks: ["load average is high on the host"],
+    });
+    expect(posix.map((item) => item.command)).toEqual([
+      "uptime",
+      "ps -eo pid,ppid,comm,%cpu | sort -nrk 4 | head -20",
+    ]);
+
+    const powershell = suggestNextCommands({
+      recentBlocks: ["CPU usage is above 95%"],
+      shell: "powershell",
+    });
+    expect(powershell.map((item) => item.command)).toEqual([
+      "Get-Counter '\\Processor(_Total)\\% Processor Time' -SampleInterval 1 -MaxSamples 1",
+      "Get-Process | Sort-Object CPU -Descending | Select-Object -First 20",
+    ]);
+
+    const cmd = suggestNextCommands({
+      recentBlocks: ["CPU load is high"],
+      shell: "cmd",
+    });
+    expect(cmd.map((item) => item.command)).toEqual([
+      "wmic cpu get LoadPercentage",
+      "tasklist /FO TABLE",
+    ]);
+  });
+
   it("filters candidates by the exact command prefix while the user is typing", () => {
     const suggestions = suggestNextCommands({
       recentBlocks: [],

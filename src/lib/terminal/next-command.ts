@@ -247,8 +247,31 @@ export function suggestNextCommands(context: NextCommandContext): NextCommandSug
       addSuggestion(suggestions, "ps aux | sort -nrk 4 | head -20", "查看占用内存最多的进程", 0.75);
     }
   }
+  const cpuSignals = /high cpu|cpu usage|cpu load|load average|load is high|system load|cpu saturation|processor usage|high processor/.test(haystack);
+  if (cpuSignals) {
+    if (shell === "powershell") {
+      addSuggestion(
+        suggestions,
+        "Get-Counter '\\Processor(_Total)\\% Processor Time' -SampleInterval 1 -MaxSamples 1",
+        "采样 PowerShell 总 CPU 使用率",
+        0.82,
+      );
+      addSuggestion(
+        suggestions,
+        "Get-Process | Sort-Object CPU -Descending | Select-Object -First 20",
+        "查看累计 CPU 时间最多的进程",
+        0.75,
+      );
+    } else if (shell === "cmd") {
+      addSuggestion(suggestions, "wmic cpu get LoadPercentage", "查看 Windows CPU 负载", 0.82);
+      addSuggestion(suggestions, "tasklist /FO TABLE", "查看当前进程列表", 0.75);
+    } else {
+      addSuggestion(suggestions, "uptime", "查看系统运行时间和负载", 0.82);
+      addSuggestion(suggestions, "ps -eo pid,ppid,comm,%cpu | sort -nrk 4 | head -20", "查看 CPU 占用最高的进程", 0.75);
+    }
+  }
   const logSignals = /\.log\b|\blogs?\b|error|exception|failed|caused by|stack trace/.test(haystack);
-  if (!systemdSignals && !networkSignals && !diskSignals && !memorySignals && logSignals) {
+  if (!systemdSignals && !networkSignals && !diskSignals && !memorySignals && !cpuSignals && logSignals) {
     if (shell === "powershell") {
       addSuggestion(
         suggestions,
