@@ -10,7 +10,7 @@
     import AuditPanel from "./AuditPanel.svelte";
     import Modal from "../components/Modal.svelte";
     import DangerModeToggle from "./DangerModeToggle.svelte";
-    import { renderMarkdown } from "./markdown.ts";
+    import MarkdownMessage from "./MarkdownMessage.svelte";
     import { formatTokenCount } from "./tokens.ts";
     import { t, errMsg } from "../i18n/index.svelte.ts";
     import * as app from "../stores/app.svelte.ts";
@@ -541,10 +541,9 @@
                         </div>
                     {:else if item.kind === "assistant"}
                         <div class="ts">{fmt(item.at)}</div>
-                        <!-- eslint-disable-next-line svelte/no-at-html-tags -->
                         <div class="bubble assistant md" class:streaming={item.streaming} class:cancelled={item.cancelled}>
                             {#if item.text}
-                                {@html renderMarkdown(item.text)}
+                                <MarkdownMessage text={item.text} active={active} streaming={item.streaming} />
                             {:else if !item.cancelled}
                                 …
                             {/if}

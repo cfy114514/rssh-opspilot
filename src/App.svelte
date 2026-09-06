@@ -61,8 +61,8 @@
 
     try {
       const [profiles, forwards] = await Promise.all([
-        loadProfiles(),
-        loadForwards(),
+        loadProfiles(true),
+        loadForwards(true),
       ]);
       if (profiles.length === 0 && forwards.length === 0) {
         showWelcome = true;

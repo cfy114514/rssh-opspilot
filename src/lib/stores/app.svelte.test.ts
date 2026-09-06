@@ -38,6 +38,49 @@ async function loadAppModule() {
 
 const local = (id: string) => ({ id, type: "local" as const, label: id });
 
+describe("startup list requests", () => {
+  it.each(["loadProfiles", "loadForwards", "loadGroups"] as const)("shares only overlapping startup %s reads", async (name) => {
+    const app = await loadAppModule();
+    let resolve!: (value: []) => void;
+    invokeMock.mockImplementation(() => new Promise((done) => { resolve = done; }));
+    const first = app[name](true);
+    const second = app[name](true);
+    expect(invokeMock).toHaveBeenCalledTimes(1);
+    resolve([]);
+    await Promise.all([first, second]);
+    invokeMock.mockResolvedValue([]);
+    await app[name](true);
+    expect(invokeMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("refresh reads bypass pending startup data and older completion cannot clear a new request", async () => {
+    const app = await loadAppModule();
+    const pending: ((value: unknown) => void)[] = [];
+    invokeMock.mockImplementation(() => new Promise((done) => { pending.push(done); }));
+    const old = app.loadProfiles(true);
+    const fresh = app.loadProfiles();
+    const newer = app.loadProfiles(true);
+    expect(invokeMock).toHaveBeenCalledTimes(2);
+    pending[0]([{ id: "old" }]);
+    await old;
+    const joined = app.loadProfiles(true);
+    expect(invokeMock).toHaveBeenCalledTimes(2);
+    pending[1]([{ id: "fresh" }]);
+    await expect(fresh).resolves.toEqual([{ id: "fresh" }]);
+    await expect(newer).resolves.toEqual([{ id: "fresh" }]);
+    await expect(joined).resolves.toEqual([{ id: "fresh" }]);
+  });
+
+  it("retries a failed startup read", async () => {
+    const app = await loadAppModule();
+    invokeMock.mockRejectedValueOnce(new Error("offline"));
+    await expect(app.loadGroups(true)).rejects.toThrow("offline");
+    invokeMock.mockResolvedValue([]);
+    await expect(app.loadGroups(true)).resolves.toEqual([]);
+    expect(invokeMock).toHaveBeenCalledTimes(2);
+  });
+});
+
 describe("OpsPilot command history setting", () => {
   it.each([null, "false", "invalid"])("defaults safely from %j", async (stored) => {
     invokeMock.mockImplementation(async (command: string) =>

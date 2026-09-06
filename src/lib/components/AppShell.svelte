@@ -7,9 +7,7 @@
     import * as updates from "../stores/updates.svelte.ts";
     import * as syncStatus from "../stores/sync.svelte.ts";
     import HomeScreen from "./HomeScreen.svelte";
-    import TerminalSplitLayout from "./TerminalSplitLayout.svelte";
     import ForwardPane from "./ForwardPane.svelte";
-    import SettingsLayout from "./SettingsLayout.svelte";
     import SftpBrowser from "./SftpBrowser.svelte";
     import DownloadsScreen from "./DownloadsScreen.svelte";
     import SnippetPicker from "./SnippetPicker.svelte";
@@ -63,6 +61,24 @@
         return chatPanelLoader;
     }
 
+    let terminalSplitLayoutLoader: Promise<typeof import("./TerminalSplitLayout.svelte")> | undefined;
+    function loadTerminalSplitLayout() {
+        terminalSplitLayoutLoader ??= import("./TerminalSplitLayout.svelte").catch((err) => {
+            terminalSplitLayoutLoader = undefined;
+            throw err;
+        });
+        return terminalSplitLayoutLoader;
+    }
+
+    let settingsLayoutLoader: Promise<typeof import("./SettingsLayout.svelte")> | undefined;
+    function loadSettingsLayout() {
+        settingsLayoutLoader ??= import("./SettingsLayout.svelte").catch((err) => {
+            settingsLayoutLoader = undefined;
+            throw err;
+        });
+        return settingsLayoutLoader;
+    }
+
     let drawerOpen = $state(false);
     let focusIdx = $state(-1);
     let tabCycling = $state(false);
@@ -84,12 +100,12 @@
         }
     });
 
-    async function refreshNavigationData() {
+    async function refreshNavigationData(startup = false) {
         const current = ++navigationLoad;
         try {
             const [nextProfiles, nextGroups] = await Promise.all([
-                app.loadProfiles(),
-                app.loadGroups(),
+                app.loadProfiles(startup),
+                app.loadGroups(startup),
             ]);
             if (current !== navigationLoad) return;
             profiles = nextProfiles;
@@ -268,8 +284,8 @@
     });
 
     $effect(() => {
-        syncStatus.configurationRevision();
-        void refreshNavigationData();
+        const revision = syncStatus.configurationRevision();
+        void refreshNavigationData(navigationLoad === 0 && revision === 0);
     });
 
     /* Consume window.__rssh_ai_handoff injected by analyze_locally tool.
@@ -1419,17 +1435,21 @@
                         role="presentation"
                     >
                         {#if resourcePanesAllowed && layout}
-                            <TerminalSplitLayout
-                                {layout}
-                                activePaneId={workspace.id === app.activeWorkspaceId() ? app.activePaneId() : workspace.id}
-                                onActivate={(tabId) => {
-                                    if (workspace.id === app.activeWorkspaceId()) app.setActivePane(tabId);
-                                }}
-                                onResize={(path, ratio) => app.resizeLayoutPath(workspace.id, path, ratio)}
-                                onClose={closeTerminalPane}
-                                onContextMenu={openPaneContextMenu}
-                                onInitialConnectionFailure={handleInitialConnectionFailure}
-                            />
+                            {#await loadTerminalSplitLayout() then { default: TerminalSplitLayout }}
+                                <TerminalSplitLayout
+                                    {layout}
+                                    activePaneId={workspace.id === app.activeWorkspaceId() ? app.activePaneId() : workspace.id}
+                                    onActivate={(tabId) => {
+                                        if (workspace.id === app.activeWorkspaceId()) app.setActivePane(tabId);
+                                    }}
+                                    onResize={(path, ratio) => app.resizeLayoutPath(workspace.id, path, ratio)}
+                                    onClose={closeTerminalPane}
+                                    onContextMenu={openPaneContextMenu}
+                                    onInitialConnectionFailure={handleInitialConnectionFailure}
+                                />
+                            {:catch error}
+                                <div>{t("pane.load_failed", { error: errMsg(error) })}</div>
+                            {/await}
                         {/if}
                     </div>
                 {/each}
@@ -1464,7 +1484,11 @@
 
                 {#if app.settingsActive()}
                     <div class="pane visible">
-                        <SettingsLayout/>
+                        {#await loadSettingsLayout() then { default: SettingsLayout }}
+                            <SettingsLayout/>
+                        {:catch error}
+                            <div>{t("pane.load_failed", { error: errMsg(error) })}</div>
+                        {/await}
                     </div>
                 {:else if activeRouteTab?.type === "home"}
                     <div class="pane visible" role="presentation" oncontextmenu={(event) => openRouteContextMenu(event, activeRouteTab)}>

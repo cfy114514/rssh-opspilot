@@ -1374,14 +1374,27 @@ export function goBack() { settingsBack(); }
 /* ═══════════════════════════════════════════════════════
    Data fetching helpers
    ═══════════════════════════════════════════════════════ */
-export async function loadProfiles(): Promise<Profile[]> {
-  return invoke<Profile[]>("list_profiles");
+// Only initial consumers opt in. Ordinary reads detach pending startup work,
+// so a post-save/sync refresh never joins a pre-write request. No result cache.
+type StartupLists = { list_profiles: Profile[]; list_forwards: Forward[]; list_groups: Group[] };
+const startupLists = new Map<keyof StartupLists, Promise<unknown>>();
+function loadList<K extends keyof StartupLists>(command: K, startup: boolean): Promise<StartupLists[K]> {
+  const pending = startupLists.get(command);
+  if (startup && pending) return pending as Promise<StartupLists[K]>;
+  const request = invoke<StartupLists[K]>(command).finally(() => {
+    if (startupLists.get(command) === request) startupLists.delete(command);
+  });
+  startupLists.set(command, request);
+  return request;
+}
+export async function loadProfiles(startup = false): Promise<Profile[]> {
+  return loadList("list_profiles", startup);
 }
 export async function loadCredentials(): Promise<Credential[]> {
   return invoke<Credential[]>("list_credentials");
 }
-export async function loadForwards(): Promise<Forward[]> {
-  return invoke<Forward[]>("list_forwards");
+export async function loadForwards(startup = false): Promise<Forward[]> {
+  return loadList("list_forwards", startup);
 }
 export async function loadSerialProfiles(): Promise<SerialProfile[]> {
   // Desktop-only: the command isn't registered on mobile. Degrade to [] rather
@@ -1442,6 +1455,6 @@ export async function loadHighlights(): Promise<HighlightRule[]> {
 let _highlightsRevision = $state(0);
 export function highlightsRevision(): number { return _highlightsRevision; }
 export function bumpHighlights() { _highlightsRevision += 1; }
-export async function loadGroups(): Promise<Group[]> {
-  return invoke<Group[]>("list_groups");
+export async function loadGroups(startup = false): Promise<Group[]> {
+  return loadList("list_groups", startup);
 }
