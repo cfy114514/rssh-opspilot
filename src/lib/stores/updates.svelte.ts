@@ -1,7 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { getVersion } from "@tauri-apps/api/app";
 
-const REPO = "rssh-org/rssh";
+export const REPO = "cfy114514/rssh-opspilot";
 const INITIAL_DELAY_MS = 10_000;
 const INTERVAL_MS = 6 * 60 * 60 * 1000; // 6h
 

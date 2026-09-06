@@ -5346,7 +5346,7 @@ dependencies = [
 
 [[package]]
 name = "rssh"
-version = "0.0.1"
+version = "0.2.20"
 dependencies = [
  "arboard",
  "argon2 0.5.3",
