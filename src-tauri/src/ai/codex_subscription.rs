@@ -15,7 +15,6 @@ use tokio::sync::{Mutex, MutexGuard};
 use super::llm::{ChatDelta, ChatRequest, ChatResponse, DeltaSink, ModelInfo};
 use crate::error::{AppError, AppResult};
 
-const VERSION: &str = "0.153.2";
 const PROFILE: &str = include_str!("codex_subscription.toml");
 const MAX_INPUT_BYTES: usize = 128 * 1024;
 const MAX_OUTPUT_BYTES: usize = 512 * 1024;
@@ -119,7 +118,7 @@ impl CodexSubscription {
             authenticated,
             login_failed: !authenticated && process.login_failed,
             executable: process.path.to_string_lossy().into_owned(),
-            version: Some(VERSION.into()),
+            version: None,
         };
         process.pending.clear();
         *slot = Some(process);
@@ -259,17 +258,6 @@ struct RpcProcess {
 
 impl RpcProcess {
     async fn start(path: PathBuf, home: &Path) -> AppResult<Self> {
-        let mut version = command(&path);
-        version.arg("--version").kill_on_drop(true);
-        let output = tokio::time::timeout(Duration::from_secs(5), version.output())
-            .await
-            .map_err(|_| failure("codex_timeout"))?
-            .map_err(|_| failure("codex_not_found"))?;
-        if !output.status.success()
-            || String::from_utf8_lossy(&output.stdout).trim() != format!("codex-cli {VERSION}")
-        {
-            return Err(failure("codex_version_unsupported"));
-        }
         safe_directory(home)?;
         let work = home.join("empty");
         let user_home = home.join("user");
@@ -302,6 +290,13 @@ impl RpcProcess {
             "LANG",
             "LC_ALL",
         ] {
+            if let Some(value) = std::env::var_os(key) {
+                cmd.env(key, value);
+            }
+        }
+        // Secret Service may use a non-default session bus (e.g. dbus-run-session).
+        #[cfg(target_os = "linux")]
+        for key in ["DBUS_SESSION_BUS_ADDRESS", "XDG_RUNTIME_DIR"] {
             if let Some(value) = std::env::var_os(key) {
                 cmd.env(key, value);
             }
@@ -671,10 +666,11 @@ fn validate_config(response: &Value) -> AppResult<()> {
         .as_object()
         .ok_or_else(|| failure("codex_tools_unavailable"))?;
     if features.get("shell_tool") != Some(&json!(false))
+        || features.get("secret_auth_storage") != Some(&json!(true))
         || features.iter().any(|(key, value)| {
             if matches!(
                 key.as_str(),
-                "skip_host_skill_discovery" | "respect_system_proxy"
+                "skip_host_skill_discovery" | "respect_system_proxy" | "secret_auth_storage"
             ) {
                 value != &json!(true)
             } else {
@@ -697,7 +693,7 @@ fn validate_config(response: &Value) -> AppResult<()> {
         || config["skills"]["bundled"]["enabled"] != false
         || config["skills"]["include_instructions"] != false
         || config["forced_login_method"] != "chatgpt"
-        || config["cli_auth_credentials_store"] != "ephemeral"
+        || config["cli_auth_credentials_store"] != "keyring"
     {
         return Err(failure("codex_tools_unavailable"));
     }

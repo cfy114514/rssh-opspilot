@@ -50,6 +50,8 @@ min-height: 0;   /* 缺这条 flex 子元素不收缩，overflow 失效 */
 
 调用方只能走 `SecretStore` (`src-tauri/src/secret/`)。`HybridStore` 用 ChaCha20-Poly1305 加密后把密文写入 DB `secrets` 表。首次选择 backend 时，系统 keychain 可用就把 master key 放 keychain，否则（包括 Android 和部分 headless 环境）放 data dir 下的 `master.key`；选择结果是 sticky 的，已选 keyring 后 keychain 失效必须硬失败，不能静默换新 file key。不要直接读写 `secrets` 表，也不要把原 secret 当成 keychain value 的当前架构。
 
+例外：Codex Subscription 登录凭据由官方 Codex 运行时以 `keyring` + `secret_auth_storage` 管理：凭据加密保存在 RSSH 独立的 `CODEX_HOME`，密钥由系统凭据库保护，不进入 RSSH DB 或配置同步；禁止 `file` / `auto` 明文回退。RSSH 自身的 secret 仍必须走 `SecretStore`。
+
 ```bash
 rg 'secret_store|SecretStore' src-tauri/src
 ```

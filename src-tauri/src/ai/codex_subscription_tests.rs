@@ -2,6 +2,45 @@ use super::super::llm::ChatMessage;
 use super::*;
 
 #[test]
+fn credentials_require_persistent_os_storage_without_file_fallback() {
+    let mut response = json!({
+        "config": {
+            "features": {"shell_tool": false, "secret_auth_storage": true},
+            "web_search": "disabled",
+            "project_doc_max_bytes": 0,
+            "skills": {"bundled": {"enabled": false}, "include_instructions": false},
+            "forced_login_method": "chatgpt",
+            "cli_auth_credentials_store": "keyring"
+        },
+        "layers": [{"config": {"tools": {
+            "update_plan": {"enabled": false},
+            "experimental_request_user_input": {"enabled": false}
+        }}}]
+    });
+    assert!(validate_config(&response).is_ok());
+    for mode in [
+        json!("file"),
+        json!("auto"),
+        json!("ephemeral"),
+        Value::Null,
+    ] {
+        response["config"]["cli_auth_credentials_store"] = mode;
+        assert_eq!(
+            validate_config(&response).unwrap_err().code(),
+            "codex_tools_unavailable"
+        );
+    }
+    response["config"]["cli_auth_credentials_store"] = json!("keyring");
+    for value in [json!(false), Value::Null] {
+        response["config"]["features"]["secret_auth_storage"] = value;
+        assert_eq!(
+            validate_config(&response).unwrap_err().code(),
+            "codex_tools_unavailable"
+        );
+    }
+}
+
+#[test]
 fn model_catalog_controls_effort_without_expensive_fallback() {
     let m = ModelInfo {
         id: "gpt-5.6-luna".into(),
@@ -114,7 +153,7 @@ fn runtime_blocks_unexpected_server_actions_and_redacts_error_payloads() {
 }
 
 #[tokio::test]
-#[ignore = "requires the validated local Codex binary; no login or inference"]
+#[ignore = "requires a local Codex binary; no login or inference"]
 async fn installed_runtime_starts_isolated_without_credentials() {
     let temp = std::env::temp_dir().canonicalize().unwrap();
     let root = temp.join(format!("rssh-codex-runtime-{}", uuid::Uuid::new_v4()));
@@ -150,7 +189,7 @@ async fn installed_runtime_starts_isolated_without_credentials() {
     let status = result.unwrap();
     assert!(status.available);
     assert!(!status.authenticated);
-    assert_eq!(status.version.as_deref(), Some("0.153.2"));
+    assert!(status.version.is_none());
 }
 
 #[test]

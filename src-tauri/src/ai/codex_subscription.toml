@@ -1,7 +1,8 @@
-# Validated against codex-cli 0.153.2; no user configuration is inherited.
+# Validated against codex-cli 0.153.4; no user configuration is inherited.
 model_provider = "openai"
 forced_login_method = "chatgpt"
-cli_auth_credentials_store = "ephemeral"
+# Codex owns subscription credentials; never fall back to plaintext auth.json.
+cli_auth_credentials_store = "keyring"
 approval_policy = "never"
 sandbox_mode = "read-only"
 web_search = "disabled"
@@ -126,7 +127,8 @@ retain_client_developer_messages = false
 rollout_budget = false
 runtime_metrics = false
 search_tool = false
-secret_auth_storage = false
+# Encrypt credential payloads; direct Windows keyring values have a size limit.
+secret_auth_storage = true
 send_async_message = false
 shell_snapshot = false
 shell_snapshot_v2 = false

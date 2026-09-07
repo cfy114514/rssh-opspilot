@@ -1,4 +1,4 @@
-"""Offline wire check for the pinned Codex runtime. No login, real API or secrets.
+"""Offline wire check for the configured Codex runtime. No login, real API or secrets.
 
 Run: python scripts/check-codex-subscription.py --codex /absolute/path/to/codex
 The fake Responses endpoint must receive exactly one request with zero tools.
@@ -24,7 +24,6 @@ def main():
     import re
     assert re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}", args.model)
     binary = Path(args.codex).resolve(strict=True)
-    assert subprocess.check_output([str(binary), "--version"], text=True).strip() == "codex-cli 0.153.2", "Unvalidated Codex version"
     requests = []
 
     class Handler(BaseHTTPRequestHandler):

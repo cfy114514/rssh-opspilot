@@ -24,7 +24,21 @@ use super::prompt::{prompt_passphrase, AuthCtx};
 
 const MAX_PASSPHRASE_RETRIES: usize = 3;
 
+fn needs_interactive_auth(result: &client::AuthResult) -> bool {
+    matches!(result, client::AuthResult::Failure { partial_success: true, remaining_methods }
+        if remaining_methods.contains(&russh::MethodKind::KeyboardInteractive))
+}
+
 pub(crate) fn check_auth_result(result: client::AuthResult) -> AppResult<()> {
+    if let client::AuthResult::Failure {
+        remaining_methods,
+        partial_success,
+    } = &result
+    {
+        log::warn!(
+            "SSH authentication incomplete: partial_success={partial_success}, remaining_methods={remaining_methods:?}"
+        );
+    }
     if result.success() {
         Ok(())
     } else {
@@ -140,11 +154,16 @@ pub async fn authenticate(
         CredentialType::Password => {
             let pw = credential.secret.unwrap_or_default();
             let result = handle
-                .authenticate_password(credential.username, pw)
+                .authenticate_password(credential.username.clone(), pw)
                 .await
                 .map_err(|e| {
                     AppError::ssh("ssh_password_auth_failed", json!({ "err": e.to_string() }))
                 })?;
+            if needs_interactive_auth(&result) {
+                let ctx = ctx
+                    .ok_or_else(|| AppError::ssh("ssh_interactive_requires_terminal", json!({})))?;
+                return authenticate_interactive(handle, credential.username, ctx).await;
+            }
             check_auth_result(result)
         }
         CredentialType::Key => {
@@ -515,6 +534,22 @@ mod tests {
     use super::*;
 
     // ── check_auth_result ──────────────────────────────────────────
+
+    #[test]
+    fn interactive_continuation_requires_partial_success_and_server_support() {
+        assert!(!needs_interactive_auth(&client::AuthResult::Success));
+        for (partial_success, method, expected) in [
+            (true, russh::MethodKind::KeyboardInteractive, true),
+            (false, russh::MethodKind::KeyboardInteractive, false),
+            (true, russh::MethodKind::Password, false),
+        ] {
+            let result = client::AuthResult::Failure {
+                remaining_methods: russh::MethodSet::from(&[method][..]),
+                partial_success,
+            };
+            assert_eq!(needs_interactive_auth(&result), expected);
+        }
+    }
 
     #[test]
     fn check_auth_success() {
