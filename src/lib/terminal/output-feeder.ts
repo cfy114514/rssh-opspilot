@@ -52,7 +52,8 @@ export interface OutputFeederOptions {
 export function createOutputFeeder(opts: OutputFeederOptions): OutputFeeder {
     const setTimer = opts.setTimer ?? ((h, ms) => setTimeout(h, ms));
     const clearTimer = opts.clearTimer ?? ((h) => clearTimeout(h));
-    const queue: QueuedChunk[] = [];
+    const queue: (QueuedChunk | undefined)[] = [];
+    let queueHead = 0;
     let queuedBytes = 0;
     let inflightBytes = 0;              // the single chunk inside write()
     let quiesceMs = 0;
@@ -69,10 +70,22 @@ export function createOutputFeeder(opts: OutputFeederOptions): OutputFeeder {
 
     function feedNext() {
         if (disposed) return;
-        const next = queue.shift();
+        const next = dequeue();
         if (next === undefined) return;
-        queuedBytes -= next.size;
         writeChunk(next);
+    }
+
+    function dequeue(): QueuedChunk | undefined {
+        const chunk = queue[queueHead];
+        if (chunk === undefined) return;
+        queue[queueHead++] = undefined; // release payloads without shifting the backlog
+        queuedBytes -= chunk.size;
+        // Compact only after consuming half: total copying stays linear.
+        if (queueHead * 2 >= queue.length) {
+            queue.splice(0, queueHead);
+            queueHead = 0;
+        }
+        return chunk;
     }
 
     return {
@@ -89,12 +102,11 @@ export function createOutputFeeder(opts: OutputFeederOptions): OutputFeeder {
             // Memory cap: drop OLDEST whole chunks. Flood output is garbage
             // the user is about to interrupt anyway; the seam may mis-render
             // one line. Acceptable.
-            while (queue.length > 0
+            while (queueHead < queue.length
                 && queuedBytes + inflightBytes + chunk.size > opts.maxPendingBytes) {
-                const oldest = queue.shift()!;
-                queuedBytes -= oldest.size;
+                dequeue();
             }
-            if (queue.length === 0 && inflightBytes === 0) {
+            if (queueHead === queue.length && inflightBytes === 0) {
                 writeChunk(chunk);      // idle: straight through, no timer
                 return;
             }
@@ -106,6 +118,7 @@ export function createOutputFeeder(opts: OutputFeederOptions): OutputFeeder {
         },
         dropPending() {
             queue.length = 0;
+            queueHead = 0;
             queuedBytes = 0;
         },
         armQuiescentDrop(windowMs) {
@@ -117,6 +130,7 @@ export function createOutputFeeder(opts: OutputFeederOptions): OutputFeeder {
         dispose() {
             disposed = true;
             queue.length = 0;
+            queueHead = 0;
             queuedBytes = 0;
             if (quiesceTimer !== null) {
                 clearTimer(quiesceTimer);

@@ -75,10 +75,15 @@ describe("createOutputFeeder", () => {
         f.push("aa");      // in flight
         f.push("bb");      // queued
         f.push("cc");      // queued
+        f.push("dd");      // queued
+        w.drain();         // partially consumed backlog; "bb" now in flight
         f.dropPending();
-        expect(f.pendingBytes()).toBe(2);   // only the in-flight "aa"
+        expect(f.pendingBytes()).toBe(2);   // only the in-flight "bb"
+        f.push("ee");      // a fresh queue must still feed normally
         w.drain();
-        expect(w.written).toEqual(["aa"]);  // queued data never written
+        expect(w.written).toEqual(["aa", "bb", "ee"]); // old queued data never written
+        w.drain();
+        expect(f.pendingBytes()).toBe(0);
     });
 
     it("quiescent drop discards pushes until the gap timer fires", () => {
@@ -125,14 +130,35 @@ describe("createOutputFeeder", () => {
         expect(w.written).toEqual(["aa", "cc"]);
     });
 
+    it("preserves raw chunks and FIFO order through a large overflow, partial drain and refill", () => {
+        const w = stubWrite();
+        const f = createOutputFeeder({ write: w.write, maxPendingBytes: 8192 });
+        const chunks = Array.from({ length: 10240 }, (_, i) => new Uint8Array([i >> 8, i & 255]));
+        for (const chunk of chunks.slice(0, 8192)) f.push(chunk);
+        expect(f.pendingBytes()).toBe(8192);
+        // The in-flight first chunk survives; the cap retains the newest 4095.
+        for (let i = 0; i < 2048; i++) w.drain();
+        for (const chunk of chunks.slice(8192)) f.push(chunk);
+        expect(f.pendingBytes()).toBe(8192);
+        while (f.pendingBytes()) w.drain();
+        const expected = [chunks[0], ...chunks.slice(4097)];
+        expect(w.written).toHaveLength(6144);
+        for (let i = 0; i < expected.length; i++) expect(w.written[i]).toBe(expected[i]);
+    });
+
     it("dispose stops feeding; idempotent", () => {
         const w = stubWrite();
         const f = createOutputFeeder({ write: w.write, maxPendingBytes: 1024 });
         f.push("aa");
         f.push("bb");
+        f.push("cc");
+        f.push("dd");
+        w.drain();
         f.dispose();
+        f.push("ignored");
         w.drain();         // in-flight callback fires after dispose
-        expect(w.written).toEqual(["aa"]);  // "bb" never fed
+        expect(w.written).toEqual(["aa", "bb"]); // "cc" never fed
+        expect(f.pendingBytes()).toBe(0);
         f.dispose();       // no throw
     });
 

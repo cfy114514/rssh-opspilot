@@ -14,6 +14,7 @@ vi.mock("@tauri-apps/api/event", () => ({
 }));
 
 beforeEach(() => {
+  vi.useFakeTimers();
   invokeMock.mockReset();
   invokeMock.mockResolvedValue(null);
   unlistenMock.mockReset();
@@ -27,6 +28,8 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  // resetModules does not cancel the previous store instance's autosaves.
+  vi.clearAllTimers();
   vi.useRealTimers();
   vi.unstubAllGlobals();
 });

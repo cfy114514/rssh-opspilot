@@ -2,6 +2,7 @@ import { describe, it, expect, vi, afterEach } from "vitest";
 import { HighlightDecorator, readLineCells, reconcile } from "./highlight-decorations.ts";
 import { compileHighlightRules } from "./highlight.ts";
 import type { HighlightRule } from "../stores/app.svelte.ts";
+import xterm from "@xterm/xterm";
 
 /**
  * Build a fake IBufferLine from [chars, width] pairs. This is a data-only
@@ -182,6 +183,7 @@ function fakeTerm() {
         clearLine(absLine: number) { lines.delete(absLine); },
         fireWrite() { ev.write.forEach((f) => f()); },
         fireResize() { ev.resize.forEach((f) => f()); },
+        scrollTo(y: number) { buf.viewportY = y; ev.scroll.forEach((f) => f()); },
         setBuffer(t: "normal" | "alternate") { buf.type = t; ev.bufc.forEach((f) => f({ type: t })); },
         flush() { const q = rafq.splice(0); q.forEach((cb) => cb()); },
         markers,
@@ -217,6 +219,29 @@ describe("HighlightDecorator lifecycle", () => {
         f.flush();
         expect(f.createdDecos()).toBe(1); // not recreated
         expect(f.activeDecos()).toBe(1);
+    });
+
+    it("bounds retained highlights to the viewport across 3,000 scrollback lines", () => {
+        const f = fakeTerm();
+        const d = new HighlightDecorator(f.term);
+        for (let y = 0; y < 3_000; y++) f.setLine(y, "ERROR here");
+        d.setRules(compileHighlightRules([rule("ERROR")]));
+        f.flush();
+        const firstMarker = f.markers[0];
+        for (let y = 3; y < 3_000; y += 3) {
+            f.scrollTo(y);
+            f.flush();
+        }
+        expect(f.activeDecos()).toBe(3);
+        expect(f.markers.filter((m) => !m.isDisposed)).toHaveLength(3);
+        expect(firstMarker.isDisposed).toBe(true);
+
+        f.scrollTo(0);
+        f.flush();
+        expect(f.activeDecos()).toBe(3);
+        expect(f.markers.filter((m) => !m.isDisposed).map((m) => m.line)).toEqual([0, 1, 2]);
+        d.dispose();
+        expect(f.activeDecos()).toBe(0);
     });
 
     it("recreates when a line's matches change", () => {
@@ -256,5 +281,58 @@ describe("HighlightDecorator lifecycle", () => {
         f.fireWrite();
         f.flush();
         expect(f.activeDecos()).toBe(0);
+    });
+
+    it("rebuilds real xterm scrollback after reflow, rule changes and alternate buffers", async () => {
+        const term = new xterm.Terminal({ allowProposedApi: true, cols: 12, rows: 3 });
+        const rafq: FrameRequestCallback[] = [];
+        vi.stubGlobal("requestAnimationFrame", (cb: FrameRequestCallback) => rafq.push(cb));
+        const flush = () => rafq.splice(0).forEach((cb) => cb(0));
+        const write = (text: string) => new Promise<void>((resolve) => term.write(text, resolve));
+        const registrations = vi.spyOn(term, "registerDecoration");
+        const d = new HighlightDecorator(term);
+        const visibleHighlights = () => registrations.mock.calls
+            .map(([options]) => options)
+            .filter((options) => !options.marker.isDisposed)
+            .map(({ marker, x, width, foregroundColor }) => ({ line: marker.line, x, width, foregroundColor }));
+        try {
+            await write((`\x1b[31m${CJK}e${ACUTE} ERROR\x1b[0m\r\n`).repeat(8));
+            d.setRules(compileHighlightRules([rule("ERROR")]));
+            flush();
+            term.scrollToTop();
+            flush();
+            const expected = [0, 1, 2].map((line) => ({ line, x: 4, width: 5, foregroundColor: "#FF6B6B" }));
+            expect(visibleHighlights()).toEqual(expected);
+            // Decoration colors must leave the original SGR and parsed glyphs intact.
+            expect(term.buffer.active.getLine(0)!.getCell(4)!.getFgColor()).toBe(1);
+            expect(readLineCells(term.buffer.active.getLine(0)!)).toEqual({
+                text: `${CJK}e${ACUTE} ERROR`, cellAt: [0, 2, 2, 3, 4, 5, 6, 7, 8, 9],
+            });
+
+            term.resize(6, 3); // ERROR now crosses a wrapped row boundary.
+            flush();
+            expect(visibleHighlights()).toEqual([]);
+            term.resize(12, 3);
+            term.scrollToTop();
+            flush();
+            expect(visibleHighlights()).toEqual(expected);
+
+            d.setRules(compileHighlightRules([rule(`${CJK}e${ACUTE}`)]));
+            flush();
+            expect(visibleHighlights()).toEqual([0, 1, 2].map((line) => ({
+                line, x: 0, width: 3, foregroundColor: "#FF6B6B",
+            })));
+            await write("\x1b[?1049hERROR");
+            flush();
+            expect(visibleHighlights()).toEqual([]);
+            await write("\x1b[?1049l");
+            term.scrollToTop();
+            flush();
+            expect(visibleHighlights()).toHaveLength(3);
+        } finally {
+            d.dispose();
+            term.dispose();
+            registrations.mockRestore();
+        }
     });
 });

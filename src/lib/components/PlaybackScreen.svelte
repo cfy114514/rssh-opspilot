@@ -6,19 +6,19 @@
   import * as app from "../stores/app.svelte.ts";
   import * as theme from "../themes/store.svelte.ts";
   import { setupTouchScroll } from "../terminal/touch-scroll.ts";
+  import { createPlayback, type CastEvent } from "../terminal/playback.ts";
   import { t, errMsg } from "../i18n/index.svelte.ts";
 
   let containerEl: HTMLDivElement;
   let terminal: Terminal;
   let fitAddon: FitAddon;
 
-  let events = $state<[number, string, string][]>([]);
+  let events = $state.raw<CastEvent[]>([]);
   let playing = $state(false);
-  let currentIdx = $state(0);
   let speed = $state(1);
   let totalDuration = $state(0);
   let elapsed = $state(0);
-  let timerId: ReturnType<typeof setTimeout> | null = null;
+  let playback: ReturnType<typeof createPlayback> | undefined;
   let unsubscribeTheme: (() => void) | null = null;
   let unsubscribeFont: (() => void) | null = null;
   let touchScrollCleanup: (() => void) | null = null;
@@ -62,7 +62,7 @@
   function handleResize() { fitAddon?.fit(); }
 
   onDestroy(() => {
-    stop();
+    playback?.dispose();
     unsubscribeTheme?.();
     unsubscribeFont?.();
     touchScrollCleanup?.();
@@ -83,67 +83,44 @@
       }
 
       // Parse events
-      events = [];
+      const parsed: CastEvent[] = [];
       for (let i = 1; i < lines.length; i++) {
         try {
           const ev = JSON.parse(lines[i]);
-          if (Array.isArray(ev) && ev.length >= 3) {
-            events.push(ev as [number, string, string]);
+          if (Array.isArray(ev) && ev.length >= 3 && typeof ev[0] === "number"
+              && Number.isFinite(ev[0]) && ev[0] >= 0 && typeof ev[1] === "string" && typeof ev[2] === "string") {
+            parsed.push(ev as CastEvent);
           }
         } catch { /* skip malformed lines */ }
       }
+      events = parsed;
       totalDuration = events.length > 0 ? events[events.length - 1][0] : 0;
+      playback?.dispose();
+      playback = createPlayback(events, {
+        write: (data, parsed) => terminal.write(data, parsed),
+        reset: () => terminal.reset(),
+        update: (_index, time, active) => { elapsed = time; playing = active; },
+      });
     } catch (e: any) {
       terminal.write(`\x1b[31m${t("playback.load_failed", { error: errMsg(e) })}\x1b[0m\r\n`);
     }
   }
 
   function play() {
-    if (events.length === 0) return;
-    if (currentIdx >= events.length) {
-      currentIdx = 0;
-      terminal.reset();
-    }
-    playing = true;
-    scheduleNext();
-  }
-
-  function scheduleNext() {
-    if (!playing || currentIdx >= events.length) {
-      playing = false;
-      return;
-    }
-    const ev = events[currentIdx];
-    const prevTime = currentIdx > 0 ? events[currentIdx - 1][0] : 0;
-    const delay = ((ev[0] - prevTime) / speed) * 1000;
-
-    timerId = setTimeout(() => {
-      if (!playing) return;
-      terminal.write(ev[2]);
-      elapsed = ev[0];
-      currentIdx++;
-      scheduleNext();
-    }, Math.max(delay, 1));
+    playback?.play(speed);
   }
 
   function pause() {
-    playing = false;
-    if (timerId) { clearTimeout(timerId); timerId = null; }
+    playback?.pause();
   }
 
   function stop() {
-    pause();
-    currentIdx = 0;
-    elapsed = 0;
-    terminal?.reset();
+    playback?.stop();
   }
 
   function setSpeed(s: number) {
     speed = s;
-    if (playing) {
-      pause();
-      play();
-    }
+    if (playing) playback?.play(s);
   }
 </script>
 

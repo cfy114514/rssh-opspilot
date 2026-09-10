@@ -766,6 +766,14 @@ fn dispatch(
         )),
         "cli_install" => Err(json!("cli_install_not_applicable_embedded")),
 
+        // ---- AI configuration reads ----
+        "ai_list_skills" => ok(crate::ai::skills::list_all(&state.db)),
+        "ai_get_skill" => ok(crate::ai::skills::get(
+            &state.db,
+            &arg::<String>(&args, "id")?,
+        )),
+        "ai_list_redact_rules" => ok(crate::ai::redact_rules::list(&state.db)),
+
         // ---- AI: audit save to a server-side path + remote-shell cache write ----
         "ai_audit_save" => {
             let tab_id: String = arg(&args, "tabId")?;
@@ -811,8 +819,8 @@ fn dispatch(
     }
 }
 
-/// Async dispatch: the `async` commands (ssh / sftp / ai) live here; everything
-/// else falls through to the sync `dispatch`. Mirrors the matching commands.
+/// Async dispatch: blocking reads use the worker pool; session/control commands
+/// retain their existing ordering. Mirrors the matching commands.
 async fn dispatch_async(
     state: &Arc<AppState>,
     owner: &SessionOwner,
@@ -821,6 +829,50 @@ async fn dispatch_async(
     tx: &mpsc::UnboundedSender<Message>,
 ) -> Result<Value, Value> {
     match cmd {
+        // DB contention, keychain access and filesystem/process queries must not
+        // block this server's single runtime thread. Keep this list explicit:
+        // transport opens/writes and lifecycle mutations must stay on their
+        // existing paths, including when a disconnected invoke is cancelled.
+        "list_profiles"
+        | "get_profile"
+        | "list_credentials"
+        | "get_credential"
+        | "list_groups"
+        | "list_forwards"
+        | "get_forward"
+        | "list_plugins"
+        | "get_setting"
+        | "command_block_list_redact_rules"
+        | "opspilot_feedback_stats"
+        | "opspilot_memory_stats"
+        | "get_sync_auto_pull_status"
+        | "list_highlights"
+        | "load_snippets"
+        | "serial_list_ports"
+        | "list_telnet_profiles"
+        | "list_serial_profiles"
+        | "get_serial_profile"
+        | "list_recordings"
+        | "read_recording"
+        | "read_default_key_file"
+        | "cli_status"
+        | "refresh_shells"
+        | "ai_list_skills"
+        | "ai_get_skill"
+        | "ai_list_redact_rules" => {
+            let state = state.clone();
+            let owner = owner.clone();
+            let cmd = cmd.to_owned();
+            let tx = tx.clone();
+            tokio::task::spawn_blocking(move || dispatch(&state, &owner, &cmd, args, &tx))
+                .await
+                .map_err(|e| {
+                    err_value(AppError::other(
+                        "task_join_failed",
+                        json!({ "err": e.to_string() }),
+                    ))
+                })?
+        }
         "ssh_connect" => ssh_connect(state, owner, args, tx).await,
         // Async like the Tauri command, for the same reason: DNS + TCP connect
         // can block up to 10s per address and must not stall the ws event loop.
@@ -1235,11 +1287,6 @@ async fn dispatch_async(
             Ok(Value::Null)
         }
         "ai_session_rebind_target" => ai_rebind(state, owner, args),
-        "ai_list_skills" => ok(crate::ai::skills::list_all(&state.db)),
-        "ai_get_skill" => ok(crate::ai::skills::get(
-            &state.db,
-            &arg::<String>(&args, "id")?,
-        )),
         "ai_save_skill" => ok(crate::ai::skills::save_user(
             &state.db,
             &crate::ai::skills::SkillRecord {
@@ -1254,7 +1301,6 @@ async fn dispatch_async(
             &state.db,
             &arg::<String>(&args, "id")?,
         )),
-        "ai_list_redact_rules" => ok(crate::ai::redact_rules::list(&state.db)),
         "ai_save_redact_rule" => ok(crate::ai::redact_rules::save(
             &state.db,
             &crate::ai::redact_rules::RedactRuleRecord {
@@ -1825,6 +1871,73 @@ mod tests {
             ai_session_owners: Arc::new(Mutex::new(HashMap::new())),
             ai_remote_shell_cache: Mutex::new(HashMap::new()),
             data_dir: std::path::PathBuf::new(),
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn blocking_reads_leave_headless_control_commands_responsive() {
+        for (command, args, expected) in [
+            ("get_setting", json!({ "key": "theme" }), json!("dark")),
+            ("list_profiles", json!({}), json!([])),
+        ] {
+            let state = Arc::new(empty_state());
+            crate::db::settings::set(&state.db, "theme", "dark").unwrap();
+            let owner = SessionOwner::Headless(uuid::Uuid::new_v4());
+            let (tx, _rx) = mpsc::unbounded_channel();
+            let (locked_tx, locked_rx) = std::sync::mpsc::channel();
+            let (release_tx, release_rx) = std::sync::mpsc::channel();
+            let db = state.db.clone();
+            let holder = std::thread::spawn(move || {
+                db.with_transaction(|_| {
+                    locked_tx.send(()).unwrap();
+                    // Watchdog only: the control command should release the lock.
+                    // A blocking runtime needs this escape hatch to fail, not hang.
+                    Ok(release_rx
+                        .recv_timeout(std::time::Duration::from_secs(1))
+                        .is_ok())
+                })
+                .unwrap()
+            });
+            locked_rx.recv().unwrap();
+
+            let read_finished = std::cell::Cell::new(false);
+            let (read, (control, read_was_pending)) = tokio::join!(
+                biased;
+                async {
+                    let result = dispatch_async(
+                        &state,
+                        &owner,
+                        command,
+                        args,
+                        &tx,
+                    )
+                    .await;
+                    read_finished.set(true);
+                    result
+                },
+                async {
+                    let result = dispatch_async(
+                        &state,
+                        &owner,
+                        "plugin:app|version",
+                        json!({}),
+                        &tx,
+                    )
+                    .await;
+                    let read_was_pending = !read_finished.get();
+                    let _ = release_tx.send(());
+                    (result, read_was_pending)
+                },
+            );
+
+            let released_by_control = holder.join().unwrap();
+            assert_eq!(read.unwrap(), expected);
+            assert_eq!(control.unwrap(), json!(env!("CARGO_PKG_VERSION")));
+            assert!(
+                read_was_pending,
+                "database read blocked the control command"
+            );
+            assert!(released_by_control, "database lock needed its watchdog");
         }
     }
 

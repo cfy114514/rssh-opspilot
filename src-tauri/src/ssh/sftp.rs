@@ -2,6 +2,7 @@ use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -15,6 +16,8 @@ use crate::ssh::client;
 /// (transfers.svelte.ts) matches this literal via `errStr.includes(...)` to
 /// flip the status to "cancelled". Keep the constant in sync across both ends.
 pub const CANCELLED_CODE: &str = "transfer_cancelled";
+
+const PROGRESS_INTERVAL: Duration = Duration::from_millis(100);
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RemoteEntry {
@@ -808,7 +811,8 @@ impl SftpHandle {
 }
 
 /// Pure download copy loop: read from `src` (remote), write to `dst` (local),
-/// 32 KiB at a time. Reports cumulative bytes via `on_progress` and checks
+/// 32 KiB at a time. Coalesces progress updates between the first and final
+/// chunk to avoid flooding IPC and the UI on fast transfers. Checks
 /// `cancel` between chunks. No Tauri/Host dependency — progress is injected — so
 /// it's unit-testable over in-memory `Cursor`/`Vec`. `read` errors are the
 /// remote side (`sftp_io_failed` op:read); `write` errors are the local side
@@ -824,6 +828,8 @@ where
     W: AsyncWrite + Unpin,
 {
     let mut transferred: u64 = 0;
+    let mut reported = 0;
+    let mut progress_at = Instant::now();
     let mut buf = vec![0u8; 32768];
     loop {
         if cancel.load(Ordering::Relaxed) {
@@ -840,6 +846,13 @@ where
         }
         dst.write_all(&buf[..n]).await?;
         transferred += n as u64;
+        if reported == 0 || progress_at.elapsed() >= PROGRESS_INTERVAL {
+            on_progress(transferred);
+            reported = transferred;
+            progress_at = Instant::now();
+        }
+    }
+    if transferred != reported {
         on_progress(transferred);
     }
     Ok(transferred)
@@ -860,6 +873,8 @@ where
     W: AsyncWrite + Unpin,
 {
     let mut transferred: u64 = 0;
+    let mut reported = 0;
+    let mut progress_at = Instant::now();
     let mut buf = vec![0u8; 32768];
     loop {
         if cancel.load(Ordering::Relaxed) {
@@ -876,6 +891,13 @@ where
             )
         })?;
         transferred += n as u64;
+        if reported == 0 || progress_at.elapsed() >= PROGRESS_INTERVAL {
+            on_progress(transferred);
+            reported = transferred;
+            progress_at = Instant::now();
+        }
+    }
+    if transferred != reported {
         on_progress(transferred);
     }
     Ok(transferred)
@@ -919,11 +941,12 @@ mod tests {
     /// ending at the total. Driven over in-memory buffers — no SSH, no Tauri.
     #[tokio::test]
     async fn stream_download_copies_all_bytes_with_progress() {
-        let data: Vec<u8> = (0..100_000u32).map(|i| i as u8).collect();
+        let data: Vec<u8> = (0..8 * 1024 * 1024u32).map(|i| i as u8).collect();
         let mut src = Cursor::new(data.clone());
         let mut dst: Vec<u8> = Vec::new();
         let mut ticks: Vec<u64> = Vec::new();
         let cancel = AtomicBool::new(false);
+        let started = std::time::Instant::now();
         let n = stream_download(&mut src, &mut dst, |t| ticks.push(t), &cancel)
             .await
             .unwrap();
@@ -931,21 +954,33 @@ mod tests {
         assert_eq!(dst, data);
         assert_eq!(*ticks.last().unwrap(), data.len() as u64);
         assert!(ticks.windows(2).all(|w| w[0] < w[1]));
+        assert!(
+            ticks.len() as u128 <= 2 + started.elapsed().as_millis() / 100,
+            "progress must be coalesced between its first and final update: {} events",
+            ticks.len(),
+        );
     }
 
     #[tokio::test]
     async fn stream_upload_copies_all_bytes_with_progress() {
-        let data: Vec<u8> = (0..100_000u32).map(|i| (i * 7) as u8).collect();
+        let data: Vec<u8> = (0..8 * 1024 * 1024u32).map(|i| (i * 7) as u8).collect();
         let mut src = Cursor::new(data.clone());
         let mut dst: Vec<u8> = Vec::new();
         let mut ticks: Vec<u64> = Vec::new();
         let cancel = AtomicBool::new(false);
+        let started = std::time::Instant::now();
         let n = stream_upload(&mut src, &mut dst, |t| ticks.push(t), &cancel)
             .await
             .unwrap();
         assert_eq!(n, data.len() as u64);
         assert_eq!(dst, data);
         assert_eq!(*ticks.last().unwrap(), data.len() as u64);
+        assert!(ticks.windows(2).all(|w| w[0] < w[1]));
+        assert!(
+            ticks.len() as u128 <= 2 + started.elapsed().as_millis() / 100,
+            "progress must be coalesced between its first and final update: {} events",
+            ticks.len(),
+        );
     }
 
     /// A pre-raised cancel flag must bail before writing a single byte, and the

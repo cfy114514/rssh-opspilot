@@ -24,6 +24,20 @@ use super::prompt::{prompt_passphrase, AuthCtx};
 
 const MAX_PASSPHRASE_RETRIES: usize = 3;
 
+async fn decode_private_key(
+    pem: &str,
+    passphrase: Option<&str>,
+) -> AppResult<Result<PrivateKey, russh::keys::Error>> {
+    let pem = zeroize::Zeroizing::new(pem.to_owned());
+    let passphrase = passphrase.map(|value| zeroize::Zeroizing::new(value.to_owned()));
+    // All SSH sessions share one event thread; key parsing/KDF work must yield it.
+    tokio::task::spawn_blocking(move || {
+        russh::keys::decode_secret_key(&pem, passphrase.as_ref().map(|value| value.as_str()))
+    })
+    .await
+    .map_err(|e| AppError::other("task_join_failed", json!({ "err": e.to_string() })))
+}
+
 fn needs_interactive_auth(result: &client::AuthResult) -> bool {
     matches!(result, client::AuthResult::Failure { partial_success: true, remaining_methods }
         if remaining_methods.contains(&russh::MethodKind::KeyboardInteractive))
@@ -60,7 +74,7 @@ pub(crate) async fn decode_key_with_prompt(
     use russh::keys::Error::KeyIsEncrypted;
 
     // 第一次：试无密码（未加密的 key 直接通过；加密的 key 才进入下面流程）
-    match russh::keys::decode_secret_key(pem, None) {
+    match decode_private_key(pem, None).await? {
         Ok(k) => return Ok(k),
         Err(KeyIsEncrypted) => {}
         Err(e) => {
@@ -80,7 +94,7 @@ pub(crate) async fn decode_key_with_prompt(
                 .and_then(|m| m.get(key).cloned())
         };
         if let Some(pw) = cached {
-            match russh::keys::decode_secret_key(pem, Some(pw.as_str())) {
+            match decode_private_key(pem, Some(pw.as_str())).await? {
                 Ok(k) => return Ok(k),
                 Err(KeyIsEncrypted) => {
                     // 缓存的 passphrase 不再匹配（用户改了密码）— 清掉再走交互
@@ -105,7 +119,7 @@ pub(crate) async fn decode_key_with_prompt(
     // 最多 N 次重试
     for attempt in 0..MAX_PASSPHRASE_RETRIES {
         let pw = prompt_passphrase(ctx, prompt_label).await?;
-        match russh::keys::decode_secret_key(pem, Some(&pw)) {
+        match decode_private_key(pem, Some(&pw)).await? {
             Ok(k) => {
                 if let Some(key) = cache_key {
                     let state = ctx.app.state();
@@ -532,6 +546,84 @@ pub async fn authenticate_interactive(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn private_key_decoding_yields_the_ssh_runtime() {
+        let key: PrivateKey =
+            russh::keys::ssh_key::private::Ed25519Keypair::from_seed(&[7u8; 32]).into();
+        let pem = key
+            .to_openssh(russh::keys::ssh_key::LineEnding::LF)
+            .unwrap();
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .max_blocking_threads(1)
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            // Occupy the only blocking worker so this checks scheduling without timing races.
+            let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+            let (release_tx, release_rx) = std::sync::mpsc::channel();
+            let blocker = tokio::task::spawn_blocking(move || {
+                started_tx.send(()).unwrap();
+                release_rx.recv().unwrap();
+            });
+            started_rx.await.unwrap();
+            let completed = std::cell::Cell::new(false);
+            let (decoded, yielded) = tokio::join!(biased;
+                async {
+                    let result = decode_key_with_prompt(&pem, None, "", None).await;
+                    completed.set(true);
+                    result
+                },
+                async {
+                    let yielded = !completed.get();
+                    release_tx.send(()).unwrap();
+                    yielded
+                }
+            );
+            blocker.await.unwrap();
+            assert!(yielded, "private-key parsing blocked the SSH event thread");
+            assert_eq!(decoded.unwrap().public_key(), key.public_key());
+            assert_eq!(
+                decode_key_with_prompt("invalid key", None, "", None)
+                    .await
+                    .unwrap_err()
+                    .code(),
+                "ssh_privkey_parse_failed"
+            );
+
+            let encrypted = key
+                .encrypt_with(
+                    russh::keys::ssh_key::Cipher::Aes256Ctr,
+                    russh::keys::ssh_key::Kdf::Bcrypt {
+                        salt: vec![7; 16],
+                        rounds: 1,
+                    },
+                    7,
+                    "test-only",
+                )
+                .unwrap()
+                .to_openssh(russh::keys::ssh_key::LineEnding::LF)
+                .unwrap();
+            for password in [None, Some("wrong"), Some("test-only")] {
+                let expected = russh::keys::decode_secret_key(&encrypted, password)
+                    .map(|key| key.public_key().clone())
+                    .map_err(|e| e.to_string());
+                let actual = decode_private_key(&encrypted, password)
+                    .await
+                    .unwrap()
+                    .map(|key| key.public_key().clone())
+                    .map_err(|e| e.to_string());
+                assert_eq!(actual, expected);
+            }
+            assert_eq!(
+                decode_key_with_prompt(&encrypted, None, "", None)
+                    .await
+                    .unwrap_err()
+                    .code(),
+                "ssh_privkey_encrypted_no_ctx"
+            );
+        });
+    }
 
     // ── check_auth_result ──────────────────────────────────────────
 

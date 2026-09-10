@@ -362,6 +362,13 @@ pub fn append_event(db: &Db, event: &OpsPilotEventInput) -> AppResult<()> {
                 event.occurred_at,
             ],
         )?;
+        let event_count: i64 =
+            tx.query_row("SELECT COUNT(*) FROM opspilot_events", [], |row| row.get(0))?;
+        let excess = event_count - MAX_EVENTS;
+        if excess <= 0 {
+            return Ok(());
+        }
+        // Read the oldest excess rows instead of walking past all retained rows.
         // Remember only sessions that actually own rows selected for trimming.
         // Deleting every zero-event session here would race a newly started
         // terminal that has not produced its first command yet.
@@ -369,12 +376,12 @@ pub fn append_event(db: &Db, event: &OpsPilotEventInput) -> AppResult<()> {
             let mut stmt = tx.prepare(
                 "SELECT DISTINCT session_id FROM (
                      SELECT session_id FROM opspilot_events
-                     ORDER BY occurred_at DESC, id DESC
-                     LIMIT -1 OFFSET ?1
+                     ORDER BY occurred_at ASC, id ASC
+                     LIMIT ?1
                  )",
             )?;
             let ids = stmt
-                .query_map([MAX_EVENTS], |row| row.get::<_, String>(0))?
+                .query_map([excess], |row| row.get::<_, String>(0))?
                 .collect::<Result<Vec<_>, _>>()?;
             ids
         };
@@ -382,10 +389,10 @@ pub fn append_event(db: &Db, event: &OpsPilotEventInput) -> AppResult<()> {
             "DELETE FROM opspilot_events
              WHERE id IN (
                  SELECT id FROM opspilot_events
-                 ORDER BY occurred_at DESC, id DESC
-                 LIMIT -1 OFFSET ?1
+                 ORDER BY occurred_at ASC, id ASC
+                 LIMIT ?1
              );",
-            [MAX_EVENTS],
+            [excess],
         )?;
         for session_id in trimmed_session_ids {
             tx.execute(
@@ -790,6 +797,78 @@ mod tests {
         restarted.generation = 1;
         append_event(&db, &restarted).unwrap();
         assert_eq!(memory_stats(&db).unwrap().events, 1);
+    }
+
+    #[test]
+    fn retention_preserves_ties_backdated_events_duplicates_and_atomicity() {
+        let db = crate::db::Db::open_in_memory().unwrap();
+        for id in ["kept", "trimmed", "empty"] {
+            start_session(&db, &session(id, 0)).unwrap();
+        }
+        {
+            let conn = db.lock().unwrap();
+            conn.execute(
+                "WITH RECURSIVE events(n) AS (
+                     SELECT 0 UNION ALL SELECT n + 1 FROM events WHERE n < ?1
+                 )
+                 INSERT INTO opspilot_events
+                 (id, session_id, source_block_id, kind, cwd_source, cwd_confidence,
+                  command_redacted, exit_source, occurred_at)
+                 SELECT printf('event-%05d', n),
+                        CASE WHEN n < 2 THEN 'trimmed' ELSE 'kept' END,
+                        n, 'command_observed', 'unknown', 0, 'echo', 'unavailable', 10
+                 FROM events",
+                [MAX_EVENTS + 1],
+            )
+            .unwrap();
+            conn.execute_batch(
+                "CREATE TEMP TRIGGER fail_session_pruning BEFORE DELETE ON opspilot_sessions
+                 BEGIN SELECT RAISE(ABORT, 'pruning failed'); END;",
+            )
+            .unwrap();
+        }
+
+        // A duplicate still repairs an over-cap ledger; failed pruning rolls it all back.
+        let duplicate = command_event("kept", MAX_EVENTS + 1);
+        assert!(append_event(&db, &duplicate).is_err());
+        assert_eq!(memory_stats(&db).unwrap().events, (MAX_EVENTS + 2) as u64);
+        db.lock()
+            .unwrap()
+            .execute_batch("DROP TRIGGER fail_session_pruning")
+            .unwrap();
+        append_event(&db, &duplicate).unwrap();
+        assert_eq!(memory_stats(&db).unwrap().events, MAX_EVENTS as u64);
+        assert_eq!(memory_stats(&db).unwrap().sessions, 2);
+
+        start_session(&db, &session("backdated", 0)).unwrap();
+        let mut backdated = command_event("backdated", MAX_EVENTS + 2);
+        backdated.occurred_at = 1;
+        append_event(&db, &backdated).unwrap();
+        assert_eq!(memory_stats(&db).unwrap().sessions, 2);
+        let mut newest = command_event("kept", MAX_EVENTS + 2);
+        newest.occurred_at = 11;
+        append_event(&db, &newest).unwrap();
+        append_event(&db, &newest).unwrap();
+
+        let conn = db.lock().unwrap();
+        let remaining: (i64, String, i64, i64) = conn
+            .query_row(
+                "SELECT COUNT(*), MIN(id), MIN(occurred_at), MAX(occurred_at)
+                 FROM opspilot_events",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .unwrap();
+        assert_eq!(remaining, (MAX_EVENTS, "event-00003".into(), 10, 11));
+        assert_eq!(
+            conn.query_row(
+                "SELECT COUNT(*) FROM opspilot_sessions WHERE id IN ('kept', 'empty')",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+            2
+        );
     }
 
     #[test]

@@ -19,13 +19,14 @@ export interface ViewportCell {
   getWidth(): number;
 }
 export interface ViewportLine {
-  getCell(x: number): ViewportCell | undefined;
+  getCell(x: number, cell?: ViewportCell): ViewportCell | undefined;
 }
 export interface ViewportBuffer {
   viewportY: number;
   baseY: number;
   cursorX: number;
   cursorY: number;
+  getNullCell(): ViewportCell;
   getLine(y: number): ViewportLine | undefined;
 }
 export interface ViewportSource {
@@ -44,13 +45,14 @@ export function readViewportSnapshot(src: ViewportSource): ViewportSnapshot {
   const { cols, rows } = src;
   const buf = src.buffer.active;
   const filled = new Uint8Array(cols * rows);
+  const reusableCell = buf.getNullCell();
 
   for (let r = 0; r < rows; r++) {
     const line = buf.getLine(buf.viewportY + r);
     if (!line) continue;
     const base = r * cols;
     for (let c = 0; c < cols; c++) {
-      const cell = line.getCell(c);
+      const cell = line.getCell(c, reusableCell);
       if (!cell || cell.getWidth() === 0) continue; // skip empty + wide-glyph trailing cell
       const chars = cell.getChars();
       if (chars !== "" && chars !== " ") filled[base + c] = 1;
@@ -76,6 +78,7 @@ export function readViewportText(src: ViewportSource): string[] {
   const { cols, rows } = src;
   const buf = src.buffer.active;
   const lines: string[] = [];
+  const reusableCell = buf.getNullCell();
 
   for (let r = 0; r < rows; r++) {
     const line = buf.getLine(buf.viewportY + r);
@@ -85,12 +88,12 @@ export function readViewportText(src: ViewportSource): string[] {
     }
     let s = "";
     for (let c = 0; c < cols; c++) {
-      const cell = line.getCell(c);
+      const cell = line.getCell(c, reusableCell);
       if (!cell) {
         s += " ";
         continue;
       }
-      if (cell.getWidth() === 0) continue; // trailing half of a wide glyph
+      if (cell.getWidth() === 0) continue;
       const ch = cell.getChars();
       s += ch === "" ? " " : ch;
     }

@@ -23,7 +23,7 @@ fn type_str(ft: ForwardType) -> &'static str {
 }
 
 fn rules(conn: &rusqlite::Connection, id: &str) -> AppResult<Vec<ForwardRule>> {
-    let mut stmt = conn.prepare(
+    let mut stmt = conn.prepare_cached(
         "SELECT type, local_port, remote_host, remote_port FROM forward_rules WHERE forward_id = ?1 ORDER BY position",
     )?;
     let rows = stmt.query_map(params![id], |row| {
@@ -298,10 +298,29 @@ mod tests {
     #[test]
     fn list_sorted_by_name() {
         let db = Db::open_in_memory().unwrap();
+        assert!(list(&db).unwrap().is_empty());
         insert(&db, &mk("f1", "zebra", ForwardType::Local)).unwrap();
-        insert(&db, &mk("f2", "apple", ForwardType::Local)).unwrap();
-        let names: Vec<String> = list(&db).unwrap().into_iter().map(|f| f.name).collect();
-        assert_eq!(names, vec!["apple", "zebra"]);
+        let mut apple = mk("f2", "apple", ForwardType::Remote);
+        apple.group_id = Some("g1".into());
+        insert(&db, &apple).unwrap();
+        db.lock()
+            .unwrap()
+            .execute(
+                "INSERT INTO forwards (id, name, profile_id) VALUES ('empty', 'empty', 'p1')",
+                [],
+            )
+            .unwrap();
+        let forwards = list(&db).unwrap();
+        let names: Vec<&str> = forwards.iter().map(|f| f.name.as_str()).collect();
+        assert_eq!(names, vec!["apple", "empty", "zebra"]);
+        assert_eq!(forwards[0].rules, apple.rules);
+        assert_eq!(forwards[0].group_id.as_deref(), Some("g1"));
+        assert!(forwards[1].rules.is_empty());
+        assert_eq!(
+            forwards[2].rules,
+            mk("f1", "zebra", ForwardType::Local).rules
+        );
+        assert_eq!(forwards[2].group_id, None);
     }
 
     #[test]
@@ -334,6 +353,10 @@ mod tests {
         }
         assert_eq!(
             get(&db, "fx").unwrap().rules[0].forward_type,
+            ForwardType::Local
+        );
+        assert_eq!(
+            list(&db).unwrap()[0].rules[0].forward_type,
             ForwardType::Local
         );
     }

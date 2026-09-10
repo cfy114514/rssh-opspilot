@@ -488,13 +488,15 @@ async fn push_with_remote(
     password: &str,
 ) -> AppResult<()> {
     let data_dir = state.data_dir.clone();
-    let mut prepared = run_db_blocking(state, move |db, secrets| {
-        prepare_backup(&db, secrets.as_ref(), &data_dir)
+    let password = password.to_owned();
+    let (encrypted, metadata) = run_db_blocking(state, move |db, secrets| {
+        let prepared = prepare_backup(&db, secrets.as_ref(), &data_dir)?;
+        // Argon2 is CPU-heavy too; keep it on the same blocking worker.
+        let encrypted = crate::crypto::encrypt(&prepared.json, &password)?;
+        Ok((encrypted, prepared.metadata))
     })
     .await?;
-    let encrypted = crate::crypto::encrypt(&prepared.json, password)?;
-    prepared.json.clear();
-    publish_remote(remote, &encrypted, &prepared.metadata).await
+    publish_remote(remote, &encrypted, &metadata).await
 }
 
 async fn pull_with_remote(

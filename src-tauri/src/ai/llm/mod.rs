@@ -193,7 +193,7 @@ pub fn build_client(
 
 /// 增量 SSE 解析器：feed 接收任意 byte chunk，返回完整事件的 data 字符串列表。
 pub(crate) struct SseParser {
-    /// Decoded-but-not-yet-terminated event text (split on `\n\n`).
+    /// Decoded-but-not-yet-terminated event text.
     buf: String,
     /// Bytes of an incomplete trailing UTF-8 char from the previous chunk.
     /// `reqwest` splits the stream at arbitrary byte boundaries, so a multibyte
@@ -217,28 +217,28 @@ impl SseParser {
     pub fn feed(&mut self, chunk: &[u8]) -> Vec<String> {
         self.decode_into_buf(chunk);
         let mut events = Vec::new();
-        loop {
-            let sep_idx = self.buf.find("\n\n").or_else(|| self.buf.find("\r\n\r\n"));
-            let Some(idx) = sep_idx else { break };
-            let sep_len = if self.buf[idx..].starts_with("\r\n\r\n") {
-                4
-            } else {
-                2
+        let mut data_lines = Vec::new();
+        let mut offset = 0;
+        let mut consumed = 0;
+        // Scan once, then move only the unfinished tail. Copying the remaining
+        // buffer after every event makes a large network chunk quadratic.
+        for line in self.buf.split_inclusive('\n') {
+            let Some(text) = line.strip_suffix('\n') else {
+                break;
             };
-            let event_text = self.buf[..idx].to_string();
-            self.buf = self.buf[idx + sep_len..].to_string();
-
-            let mut data_lines: Vec<&str> = Vec::new();
-            for line in event_text.lines() {
-                let line = line.trim_end_matches('\r');
-                if let Some(d) = line.strip_prefix("data:") {
-                    data_lines.push(d.strip_prefix(' ').unwrap_or(d));
+            offset += line.len();
+            let text = text.strip_suffix('\r').unwrap_or(text);
+            if text.is_empty() {
+                if !data_lines.is_empty() {
+                    events.push(data_lines.join("\n"));
+                    data_lines.clear();
                 }
-            }
-            if !data_lines.is_empty() {
-                events.push(data_lines.join("\n"));
+                consumed = offset;
+            } else if let Some(data) = text.strip_prefix("data:") {
+                data_lines.push(data.strip_prefix(' ').unwrap_or(data));
             }
         }
+        self.buf.drain(..consumed);
         events
     }
 
@@ -249,9 +249,12 @@ impl SseParser {
     /// chunk seams).
     fn decode_into_buf(&mut self, chunk: &[u8]) {
         let mut bytes = std::mem::take(&mut self.pending);
-        bytes.extend_from_slice(chunk);
-
-        let mut rest: &[u8] = &bytes;
+        let mut rest: &[u8] = if bytes.is_empty() {
+            chunk
+        } else {
+            bytes.extend_from_slice(chunk);
+            &bytes
+        };
         loop {
             match std::str::from_utf8(rest) {
                 Ok(s) => {
@@ -318,6 +321,25 @@ mod sse_tests {
         let mut p = SseParser::new();
         let events = p.feed(b"data: a\n\ndata: b\n\n");
         assert_eq!(events, vec!["a".to_string(), "b".to_string()]);
+    }
+
+    #[test]
+    fn preserves_event_order_and_partial_utf8_with_mixed_line_endings() {
+        let input = ": keepalive\r\n\r\ndata: first\r\ndata: 中\r\n\r\ndata: second\n\ndata:\n\ndata: unfinished";
+        for chunk_size in [1, 2, 3, 7, input.len()] {
+            let mut parser = SseParser::new();
+            let events: Vec<_> = input
+                .as_bytes()
+                .chunks(chunk_size)
+                .flat_map(|chunk| parser.feed(chunk))
+                .collect();
+            assert_eq!(
+                events,
+                ["first\n中", "second", ""],
+                "chunk size {chunk_size}"
+            );
+            assert_eq!(parser.feed(b"\r\n\r\n"), ["unfinished"]);
+        }
     }
 }
 

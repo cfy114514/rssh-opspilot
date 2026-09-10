@@ -2067,6 +2067,10 @@
                 dismissNextCommandSuggestions();
                 return;
             }
+            if (!app.opsPilotCommandHistoryEnabled()) {
+                scheduleNextCommandSuggestions();
+                return;
+            }
             const returnedPromptLine = [...readViewportText(terminal)]
                 .reverse()
                 .find((item) => item.trim().length > 0) ?? "";

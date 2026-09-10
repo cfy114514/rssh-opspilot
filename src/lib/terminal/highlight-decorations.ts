@@ -93,11 +93,11 @@ function sigOf(plan: LineDecoration[]): string {
  * already parsed the stream into a styled cell grid; highlighting belongs on
  * top of that grid, not back in the raw bytes.
  *
- * Decorations are PERSISTENT and anchored to markers: a decorated line keeps its
- * highlight as it scrolls (the marker tracks it) and we touch only the lines
- * whose content actually changed. Absolute line indices shift when scrollback is
- * trimmed, so the marker — not a line number — is the stable identity; we read
- * `marker.line` each pass and prune entries whose marker was disposed (trimmed).
+ * Decorations are anchored to markers and retained only in the viewport. Visible
+ * lines keep unchanged highlights; offscreen lines are disposed and recreated
+ * when revisited, so memory and repaint bookkeeping do not grow with scrollback.
+ * Absolute line indices shift when scrollback is trimmed, so we read each live
+ * marker's current line rather than retaining a stale absolute line number.
  *
  * Scope: only the normal screen is highlighted. TUI apps (vim, htop, claude's
  * UI) run in the alternate buffer and redraw constantly — decorating them is
@@ -165,22 +165,23 @@ export class HighlightDecorator {
             return;
         }
 
-        // Index live entries by their CURRENT line; prune any whose marker was
-        // disposed (its line scrolled out of the scrollback buffer).
+        const visStart = buf.viewportY;
+        const visEnd = visStart + this.term.rows;
+        // Index entries by their CURRENT line, retaining only visible markers.
         const byLine = new Map<number, LineEntry>();
         const live: LineEntry[] = [];
         for (const e of this.entries) {
-            if (e.marker.isDisposed || e.marker.line === -1) {
+            const line = e.marker.line;
+            if (e.marker.isDisposed || line < visStart || line >= visEnd) {
                 for (const d of e.items) d.dispose();
+                e.marker.dispose();
                 continue;
             }
-            byLine.set(e.marker.line, e);
+            byLine.set(line, e);
             live.push(e);
         }
 
         // Plan the visible viewport, then diff against what is already there.
-        const visStart = buf.viewportY;
-        const visEnd = buf.viewportY + this.term.rows;
         const visible: VisibleLine[] = [];
         for (let absLine = visStart; absLine < visEnd; absLine++) {
             const line = buf.getLine(absLine);
