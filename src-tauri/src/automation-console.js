@@ -8,7 +8,10 @@ const token = new URLSearchParams(location.hash.slice(1)).get("token");
 history.replaceState(null, "", location.pathname);
 let sequence = 0;
 let writable = false;
-let busy = false;
+let refreshing = false;
+let refreshPending = false;
+let submitting = false;
+let interaction = 0;
 let stopped = false;
 
 async function rpc(method, params) {
@@ -41,19 +44,22 @@ async function tool(name, args = {}) {
 }
 
 function controls() {
-  select.disabled = busy || stopped;
-  const disabled = busy || stopped || !writable || !select.value;
+  select.disabled = submitting || stopped;
+  const disabled = submitting || stopped || !writable || !select.value;
   byId("text").disabled = disabled;
   byId("send").disabled = disabled;
   byId("keys").querySelectorAll("button").forEach(button => { button.disabled = disabled; });
 }
 
 async function refresh() {
-  if (busy || stopped) return;
-  busy = true;
-  controls();
+  if (stopped) return;
+  if (refreshing || submitting) { refreshPending = true; return; }
+  refreshing = true;
+  refreshPending = false;
+  const revision = interaction;
   try {
     const { terminals, writable: canWrite } = await tool("list_terminals");
+    if (stopped) return;
     const previous = select.value;
     select.replaceChildren(...terminals.map(session => {
       const option = document.createElement("option");
@@ -63,30 +69,41 @@ async function refresh() {
     }));
     if (terminals.some(t => t.sessionId === previous)) select.value = previous;
     writable = canWrite;
+    controls();
+    if (revision !== interaction) { refreshPending = true; return; }
     if (!select.value) {
       byId("screen").textContent = "No shared sessions / 没有共享的会话";
       status.textContent = "Select and share a session in RSSH / 请在 RSSH 中选择共享会话";
       return;
     }
-    const result = await tool("read_terminal", { sessionId: select.value, lines: 150 });
+    const sessionId = select.value;
+    const result = await tool("read_terminal", { sessionId, lines: 150 });
+    // A read started before input or a selection change must not replace newer state.
+    if (stopped || revision !== interaction || sessionId !== select.value) return;
     byId("screen").textContent = result.screen;
     status.textContent = `${writable ? "Input enabled / 已允许输入" : "Read-only / 只读"} · ${result.cols}×${result.rows} · ${result.buffer} · cursor ${result.output.cursor}`;
   } catch (error) {
-    status.textContent = error.message;
-  } finally { busy = false; controls(); }
+    if (stopped || revision === interaction) status.textContent = error.message;
+  } finally {
+    refreshing = false;
+    controls();
+    if (refreshPending && !submitting && !stopped) void refresh();
+  }
 }
 
 async function input(name, args) {
-  if (busy || stopped || !writable || !select.value) return;
-  busy = true;
+  if (submitting || stopped || !writable || !select.value) return;
+  const sessionId = select.value;
+  submitting = true;
+  interaction++;
   controls();
   try {
-    await tool(name, { sessionId: select.value, ...args });
+    await tool(name, { sessionId, ...args });
     if (name === "write_terminal") byId("text").value = "";
-    status.textContent = "Input delivered; observing output / 输入已送达，正在读取输出";
+    if (!stopped) status.textContent = "Input delivered; observing output / 输入已送达，正在读取输出";
   } catch (error) {
     status.textContent = `${error.message}\nDo not retry uncertain input automatically. / 输入结果不确定时请先检查终端，不要自动重试。`;
-  } finally { busy = false; controls(); }
+  } finally { submitting = false; controls(); }
   // Do not replay input on errors; the next read observes what actually happened.
   setTimeout(refresh, 200);
 }
@@ -101,7 +118,7 @@ byId("keys").addEventListener("click", event => {
   if (key) void input("send_key", { key });
 });
 byId("refresh").addEventListener("click", refresh);
-select.addEventListener("change", refresh);
+select.addEventListener("change", () => { interaction++; void refresh(); });
 
 async function start() {
   try {

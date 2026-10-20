@@ -1,3 +1,5 @@
+import { normalizeOutgoing, remapEditingKeys } from "./serial-transforms.ts";
+
 /** Bounded, in-memory output journal. Cursors are scoped to a transport session. */
 export function createTerminalOutputJournal(limit = 262_144) {
   let chunks: { cursor: number; text: string }[] = [];
@@ -21,7 +23,9 @@ export function createTerminalOutputJournal(limit = 262_144) {
       while ((size > limit || chunks.length > 1024) && chunks.length > 1) {
         const removed = chunks.shift()!;
         size -= removed.text.length;
-        droppedThrough = removed.cursor;
+        // An oversized current chunk may already have lost its prefix. Evicting
+        // older chunks must not move that loss boundary backwards.
+        droppedThrough = Math.max(droppedThrough, removed.cursor);
       }
     },
     read(after?: number) {
@@ -89,6 +93,24 @@ export const TERMINAL_KEYS: Record<string, string> = {
   Up: "\x1b[A", Down: "\x1b[B", Right: "\x1b[C", Left: "\x1b[D",
 };
 
+/** Match the owning terminal's transport settings without rewriting literal text. */
+export function prepareAutomationInput(
+  options: Pick<AutomationWriteOptions, "text" | "raw">,
+  stream: { inputNewline: string; backspace: string } | null,
+  applicationCursorKeysMode: boolean,
+): string {
+  let text = options.text;
+  if (stream) {
+    text = options.raw
+      ? remapEditingKeys(text, stream.backspace)
+      : normalizeOutgoing(text, stream.inputNewline);
+  }
+  if (options.raw && applicationCursorKeysMode && /^\x1b\[[ABCD]$/.test(text)) {
+    text = text.replace("\x1b[", "\x1bO");
+  }
+  return text;
+}
+
 export interface AutomationRequest {
   id: string;
   name: string;
@@ -136,7 +158,7 @@ export async function executeTerminalRequest(
   } else if (request.name === "send_key") {
     if (typeof args.key !== "string" || !Object.prototype.hasOwnProperty.call(TERMINAL_KEYS, args.key)) throw new Error("Unsupported terminal key");
     text = TERMINAL_KEYS[args.key];
-    // Enter respects the transport's EOL; control bytes remain unmodified.
+    // Enter uses the transport's EOL; editing and cursor keys use its key modes.
     raw = args.key !== "Enter";
   } else {
     throw new Error("Unknown terminal tool");

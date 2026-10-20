@@ -1,5 +1,5 @@
 <script lang="ts">
-    import {createTerminalOutputJournal, readAutomationScreen, type AutomationWriteOptions} from "../terminal/automation.ts";
+    import {createTerminalOutputJournal, prepareAutomationInput, readAutomationScreen, type AutomationWriteOptions} from "../terminal/automation.ts";
     import {onDestroy, onMount, untrack} from "svelte";
     import {SvelteSet} from "svelte/reactivity";
     import {Terminal, type IDisposable} from "@xterm/xterm";
@@ -1176,10 +1176,7 @@
         };
         check();
         if (streamOpts && streamOpts.inputMode !== "normal") throw new Error("Automation requires normal terminal input mode");
-        let text = streamOpts && !options.raw ? normalizeOutgoing(options.text, streamOpts.inputNewline) : options.text;
-        if (options.raw && terminal.modes.applicationCursorKeysMode && /^\x1b\[[ABCD]$/.test(text)) {
-            text = text.replace("\x1b[", "\x1bO");
-        }
+        const text = prepareAutomationInput(options, streamOpts, terminal.modes.applicationCursorKeysMode);
         const bytes = Array.from(new TextEncoder().encode(text));
         maybeReleaseBacklog(text);
         const chunks = streamOpts?.slowSend ? bytes.map(byte => [byte]) : [bytes];

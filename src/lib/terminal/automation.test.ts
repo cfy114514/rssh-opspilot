@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { createTerminalOutputJournal, executeTerminalRequest, readAutomationScreen, type AutomationRequest, type AutomationWriteOptions } from "./automation.ts";
+import { createTerminalOutputJournal, executeTerminalRequest, prepareAutomationInput, readAutomationScreen, type AutomationRequest, type AutomationWriteOptions } from "./automation.ts";
 
 describe("terminal output journal", () => {
   it("decodes split UTF-8 and reads only output after a cursor", () => {
@@ -22,6 +22,57 @@ describe("terminal output journal", () => {
     expect(journal.read(0).chunks).toEqual([{ cursor: 2, text: "econd" }]);
     journal.reset();
     expect(journal.read(2)).toMatchObject({ cursor: 0, reset: true, chunks: [] });
+  });
+
+  it("preserves the loss boundary when an oversized chunk evicts older output", () => {
+    const journal = createTerminalOutputJournal(5);
+    journal.append(new TextEncoder().encode("old"));
+    const previousCursor = journal.read().cursor;
+    journal.append(new TextEncoder().encode("123456789"));
+    expect(journal.read(previousCursor)).toEqual({
+      cursor: 2, truncated: true, reset: false,
+      chunks: [{ cursor: 2, text: "56789" }],
+    });
+    expect(journal.read(2)).toMatchObject({ truncated: false, chunks: [] });
+    journal.append(new TextEncoder().encode("!"));
+    expect(journal.read(2)).toMatchObject({ truncated: false, chunks: [{ cursor: 3, text: "!" }] });
+  });
+});
+
+describe("automation transport input", () => {
+  it.each([
+    ["del", "\x7f"],
+    ["bs", "\x08"],
+    ["csi3", "\x1b[3~"],
+  ])("honors the serial/Telnet %s Backspace mode", async (backspace, expected) => {
+    const f = fixture();
+    f.write.mockImplementation(async options => {
+      const text = prepareAutomationInput(options, { inputNewline: "crlf", backspace }, false);
+      expect(Array.from(new TextEncoder().encode(text))).toEqual(Array.from(new TextEncoder().encode(expected)));
+    });
+    await executeTerminalRequest(f.request("send_key", { key: "Backspace" }), f.access);
+    expect(f.write).toHaveBeenCalledOnce();
+  });
+
+  it.each([["cr", "\r"], ["lf", "\n"], ["crlf", "\r\n"]])("preserves %s Enter normalization", (inputNewline, expected) => {
+    expect(prepareAutomationInput({ text: "\r", raw: false }, { inputNewline, backspace: "bs" }, false)).toBe(expected);
+  });
+
+  it("keeps other control bytes and literal text unchanged", () => {
+    const stream = { inputNewline: "cr", backspace: "bs" };
+    for (const text of ["\x03", "\x04", "\x1a", "\t", "\x1b"]) {
+      expect(prepareAutomationInput({ text, raw: true }, stream, false)).toBe(text);
+    }
+    expect(prepareAutomationInput({ text: "literal\x7f", raw: false }, stream, false)).toBe("literal\x7f");
+    expect(prepareAutomationInput({ text: "\x7f", raw: true }, null, false)).toBe("\x7f");
+  });
+
+  it("preserves application cursor-key encoding", () => {
+    for (const direction of ["A", "B", "C", "D"]) {
+      const options = { text: `\x1b[${direction}`, raw: true };
+      expect(prepareAutomationInput(options, null, false)).toBe(options.text);
+      expect(prepareAutomationInput(options, null, true)).toBe(`\x1bO${direction}`);
+    }
   });
 });
 
