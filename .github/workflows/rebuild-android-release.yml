@@ -1,0 +1,206 @@
+name: Rebuild Android release assets
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: 'Existing release tag (vMAJOR.MINOR.PATCH, e.g. v0.2.22)'
+        required: true
+        type: string
+      expected_sha:
+        description: 'Expected full 40-character source commit SHA'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: android-release-repair-${{ inputs.release_tag }}
+  cancel-in-progress: false
+
+jobs:
+  build-android:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: bash
+    env:
+      RELEASE_TAG: ${{ inputs.release_tag }}
+      EXPECTED_SHA: ${{ inputs.expected_sha }}
+    steps:
+      - name: Validate inputs and existing release
+        id: release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$RELEASE_TAG" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+            echo "::error::release_tag must be vMAJOR.MINOR.PATCH without leading zeroes"
+            exit 1
+          fi
+          if [[ ! "$EXPECTED_SHA" =~ ^[0-9a-fA-F]{40}$ ]]; then
+            echo "::error::expected_sha must be a full 40-character commit SHA"
+            exit 1
+          fi
+
+          # gh release view also resolves draft releases; no release is created.
+          RELEASE=$(gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
+            --json databaseId,tagName)
+          jq -e --arg tag "$RELEASE_TAG" '.tagName == $tag' <<< "$RELEASE" > /dev/null
+          RELEASE_ID=$(jq -r '.databaseId' <<< "$RELEASE")
+          [[ "$RELEASE_ID" =~ ^[1-9][0-9]*$ ]]
+          TAG_OBJECT_SHA=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$RELEASE_TAG" \
+            --jq '.object.sha')
+          [[ "$TAG_OBJECT_SHA" =~ ^[0-9a-f]{40}$ ]]
+
+          ASSETS=$(gh api --paginate \
+            "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID/assets?per_page=100")
+          for ABI in universal arm64; do
+            NAME="rssh-${RELEASE_TAG#v}-android-${ABI}.apk"
+            if jq -se --arg name "$NAME" 'any(.[][]; .name == $name)' <<< "$ASSETS" > /dev/null; then
+              echo "::error::Asset $NAME already exists; refusing to overwrite it"
+              exit 1
+            fi
+          done
+          echo "release_id=$RELEASE_ID" >> "$GITHUB_OUTPUT"
+          echo "tag_object_sha=$TAG_OBJECT_SHA" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@v4
+        with:
+          ref: refs/tags/${{ inputs.release_tag }}
+          persist-credentials: false
+
+      - name: Verify exact tag source
+        env:
+          TAG_OBJECT_SHA: ${{ steps.release.outputs.tag_object_sha }}
+        run: |
+          set -euo pipefail
+          [[ "$(git rev-parse HEAD)" == "${EXPECTED_SHA,,}" ]] || {
+            echo "::error::Checked-out source does not match expected_sha"
+            exit 1
+          }
+          [[ "$(git rev-parse "refs/tags/$RELEASE_TAG")" == "$TAG_OBJECT_SHA" ]] || {
+            echo "::error::Release tag changed during checkout"
+            exit 1
+          }
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - run: npm ci
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android,armv7-linux-androideabi
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Setup Android SDK & NDK
+        uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
+
+      - name: Point NDK_HOME at the runner NDK
+        run: echo "NDK_HOME=${ANDROID_NDK_LATEST_HOME:?NDK not found on runner}" >> "$GITHUB_ENV"
+
+      - name: Install Android targets
+        run: rustup target add aarch64-linux-android armv7-linux-androideabi
+
+      - name: Sync version from tag
+        run: |
+          set -euo pipefail
+          VERSION="${RELEASE_TAG#v}"
+          npm version "${VERSION}" --no-git-tag-version --allow-same-version
+          cd src-tauri
+          sed -i "s/\"version\": \".*\"/\"version\": \"${VERSION}\"/" tauri.conf.json
+          sed -i "s/^version = \".*\"/version = \"${VERSION}\"/" Cargo.toml
+
+      - name: Setup signing
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 -d > src-tauri/gen/android/release.jks
+          printf 'storeFile=release.jks\nstorePassword=%s\nkeyAlias=%s\nkeyPassword=%s\n' \
+            "$ANDROID_KEYSTORE_PASSWORD" "$ANDROID_KEY_ALIAS" "$ANDROID_KEY_PASSWORD" \
+            > src-tauri/gen/android/key.properties
+
+      - name: Build Android APK (universal)
+        run: npx tauri android build --apk
+
+      # Preserve the universal APK before the split build. Use runner temp,
+      # not dist: Vite clears dist on each invocation of the frontend build.
+      - name: Stage universal APK
+        run: |
+          set -euo pipefail
+          APK_ROOT=src-tauri/gen/android/app/build/outputs/apk
+          [[ -d "$APK_ROOT/universal" ]]
+          mapfile -d '' APKS < <(find "$APK_ROOT/universal" -name '*.apk' -type f -print0)
+          [[ "${#APKS[@]}" -eq 1 && -s "${APKS[0]}" ]]
+          mkdir -p "$RUNNER_TEMP/android-release-assets"
+          cp "${APKS[0]}" "$RUNNER_TEMP/android-release-assets/rssh-${RELEASE_TAG#v}-android-universal.apk"
+
+      - name: Build Android APK (arm64 split)
+        run: npx tauri android build --apk --split-per-abi --target aarch64
+
+      - name: Stage arm64 APK
+        run: |
+          set -euo pipefail
+          APK_ROOT=src-tauri/gen/android/app/build/outputs/apk
+          [[ -d "$APK_ROOT/arm64" ]]
+          mapfile -d '' APKS < <(find "$APK_ROOT/arm64" -name '*.apk' -type f -print0)
+          [[ "${#APKS[@]}" -eq 1 && -s "${APKS[0]}" ]]
+          cp "${APKS[0]}" "$RUNNER_TEMP/android-release-assets/rssh-${RELEASE_TAG#v}-android-arm64.apk"
+
+      - name: Upload only missing APKs to the same release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_ID: ${{ steps.release.outputs.release_id }}
+          TAG_OBJECT_SHA: ${{ steps.release.outputs.tag_object_sha }}
+        run: |
+          set -euo pipefail
+          VERSION="${RELEASE_TAG#v}"
+          APK_DIR="$RUNNER_TEMP/android-release-assets"
+          [[ -s "$APK_DIR/rssh-${VERSION}-android-universal.apk" ]]
+          [[ -s "$APK_DIR/rssh-${VERSION}-android-arm64.apk" ]]
+          [[ "$(git rev-parse HEAD)" == "${EXPECTED_SHA,,}" ]]
+
+          # Recheck identity before each upload. A release removed/recreated
+          # while building must not receive assets intended for the old one.
+          for ABI in universal arm64; do
+            CURRENT_ID=$(gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
+              --json databaseId --jq '.databaseId')
+            [[ "$CURRENT_ID" == "$RELEASE_ID" ]]
+            CURRENT_TAG_SHA=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$RELEASE_TAG" \
+              --jq '.object.sha')
+            [[ "$CURRENT_TAG_SHA" == "$TAG_OBJECT_SHA" ]]
+            RELEASE=$(gh api "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID")
+            jq -e --arg tag "$RELEASE_TAG" '.tag_name == $tag' <<< "$RELEASE" > /dev/null
+            UPLOAD_URL=$(jq -r '.upload_url' <<< "$RELEASE")
+            UPLOAD_URL="${UPLOAD_URL%%\{*}"
+            [[ "$UPLOAD_URL" == "https://uploads.github.com/repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID/assets" ]]
+
+            NAME="rssh-${VERSION}-android-${ABI}.apk"
+            # POST to the existing release ID cannot create a release/tag.
+            # Duplicate names return 422; never delete or overwrite an asset.
+            RESULT=$(gh api --method POST "$UPLOAD_URL?name=$NAME" \
+              --header "Content-Type: application/vnd.android.package-archive" \
+              --input "$APK_DIR/$NAME")
+            SIZE=$(stat -c '%s' "$APK_DIR/$NAME")
+            jq -e --arg name "$NAME" --argjson size "$SIZE" \
+              '.name == $name and .state == "uploaded" and .size == $size' \
+              <<< "$RESULT" > /dev/null
+          done
