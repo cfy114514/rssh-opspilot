@@ -1,4 +1,5 @@
 <script lang="ts">
+    import {createTerminalOutputJournal, readAutomationScreen, type AutomationWriteOptions} from "../terminal/automation.ts";
     import {onDestroy, onMount, untrack} from "svelte";
     import {SvelteSet} from "svelte/reactivity";
     import {Terminal, type IDisposable} from "@xterm/xterm";
@@ -1166,6 +1167,30 @@
         invoke(writeCmd, { sessionId, data: Array.from(new TextEncoder().encode(text)) });
     }
 
+    async function automationWrite(options: AutomationWriteOptions) {
+        const check = () => {
+            if (destroyed || disconnected || sessionId !== options.sessionId || !options.isAllowed() || Date.now() >= options.expiresAt) {
+                throw new Error("Terminal access revoked, disconnected, or request expired; input may be partially delivered");
+            }
+            if (authPrompt || passphrasePromptSessionId || hostKeyPromptSessionId) throw new Error("Complete SSH authentication in RSSH first");
+        };
+        check();
+        if (streamOpts && streamOpts.inputMode !== "normal") throw new Error("Automation requires normal terminal input mode");
+        let text = streamOpts && !options.raw ? normalizeOutgoing(options.text, streamOpts.inputNewline) : options.text;
+        if (options.raw && terminal.modes.applicationCursorKeysMode && /^\x1b\[[ABCD]$/.test(text)) {
+            text = text.replace("\x1b[", "\x1bO");
+        }
+        const bytes = Array.from(new TextEncoder().encode(text));
+        maybeReleaseBacklog(text);
+        const chunks = streamOpts?.slowSend ? bytes.map(byte => [byte]) : [bytes];
+        for (const data of chunks) {
+            check();
+            await invoke(writeCmd, { sessionId: options.sessionId, data });
+            if (streamOpts?.slowSend) await new Promise(resolve => setTimeout(resolve, 5));
+        }
+        if (streamOpts && !options.raw) streamEchoText(text);
+    }
+
     function pasteText(text: string) {
         if (!text || disconnected || !sessionId) return;
         // Serial/telnet have no bracketed paste and speak the device's EOL —
@@ -1265,6 +1290,7 @@
 
     // ─── Shared connect/wire helpers ───
 
+    const automationOutput = createTerminalOutputJournal();
     let decoder = new TextDecoder("utf-8");
 
     function acceptsSessionEvent(sid: string): boolean {
@@ -1281,6 +1307,7 @@
             listeners.push(await listen<number[]>(`${dataEvent}:${sid}`, (ev) => {
                 if (!acceptsSessionEvent(sid)) return;
                 const raw = new Uint8Array(ev.payload);
+                automationOutput.append(raw);
                 if (streamOpts) {
                     stageLoginScript(raw);
                     if (streamOpts.outputMode === "hex") {
@@ -1407,6 +1434,7 @@
         loginScriptReady = false;
         earlyLoginChunks = [];
         earlyLoginBytes = 0;
+        automationOutput.reset();
         decoder = new TextDecoder("utf-8");
 
         if (tabType === "serial") {
@@ -1954,6 +1982,14 @@
         }
 
         app.registerTerminalControls(tabId, {
+            automation: {
+                read: ({ lines, after }) => ({
+                    ...readAutomationScreen(terminal, lines),
+                    output: automationOutput.read(after),
+                    pendingOutputBytes: outputFeeder?.pendingBytes() ?? 0,
+                }),
+                write: automationWrite,
+            },
             getSelection: () => terminal.getSelection(),
             paste: pasteText,
             sendText,

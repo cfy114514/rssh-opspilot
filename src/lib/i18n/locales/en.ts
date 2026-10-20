@@ -1,5 +1,26 @@
 /** English UI strings. Keep keys stable, sorted by area. */
 const en = {
+  "automation.open_console": "Open browser console",
+  "automation.title": "External terminal access (MCP)",
+  "automation.description": "Let an MCP client read and operate existing RSSH terminals. Select sessions to share; no new SSH connection is created.",
+  "automation.desktop_only": "Terminal MCP access is available on desktop and Headless / JetBrains only.",
+  "automation.active_write": "MCP terminal access · input enabled",
+  "automation.active_read": "MCP terminal access · read-only",
+  "automation.no_shared_sessions": "Shared sessions have disconnected. Stop access and select sessions again.",
+  "automation.stop": "Stop access",
+  "automation.connect": "Connect your client",
+  "automation.connect_hint": "Use this Streamable HTTP URL with the Authorization header in a compatible MCP client. The copied configuration contains the temporary access token.",
+  "automation.copy_config": "Copy connection details",
+  "automation.show_config": "Show connection details and temporary token",
+  "automation.client_support": "ChatGPT Desktop requires a client mode or local bridge that supports reaching local MCP endpoints. A cloud connector cannot reach this computer’s 127.0.0.1 address. These connection details do not automatically install a connector. Alternatively, open the browser console for a desktop assistant that supports browser interaction.",
+  "automation.lifetime": "Access applies only to selected sessions in this window. Closing, reconnecting, reloading, or stopping access revokes it. New sessions must be shared again. Keep RSSH running.",
+  "automation.select_sessions": "Share existing terminal sessions",
+  "automation.no_sessions": "Open a terminal connection first, then return here.",
+  "automation.allow_input": "Allow commands and control keys",
+  "automation.input_hint": "Read-only by default. Enabling input lets the connected client execute commands with the session’s current permissions. Terminal output and history may contain sensitive information.",
+  "automation.start": "Start access",
+  "error.automation_unavailable": "Terminal access has stopped or belongs to another window. Start access again.",
+
   // ── Common ──
   "common.save": "Save",
   "common.saving": "Saving...",

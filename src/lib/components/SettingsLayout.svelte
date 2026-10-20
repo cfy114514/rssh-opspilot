@@ -20,6 +20,7 @@
   import AboutScreen from "./AboutScreen.svelte";
   import ShellSettings from "./ShellSettings.svelte";
   import CommandBlockSettings from "./CommandBlockSettings.svelte";
+  import AutomationSettings from "./AutomationSettings.svelte";
   import CliSettings from "./CliSettings.svelte";
   import AppearanceSettings from "./AppearanceSettings.svelte";
   import AiSettings from "./AiSettings.svelte";
@@ -49,6 +50,7 @@
     "command-blocks":     { component: CommandBlockSettings },
     "recording-settings": { component: RecordingSettings },
     "playback":           { component: PlaybackScreen },
+    "automation":         { component: AutomationSettings },
     "cli":                { component: CliSettings },
     "appearance":         { component: AppearanceSettings },
     "ai":                 { component: AiSettings },
@@ -84,13 +86,14 @@
     { id: "sync", label: t("settings.section.sync"), section: "settings.group.advanced" },
     { id: "ai", label: t("settings.section.ai"), section: "settings.group.advanced" },
     { id: "plugins", label: t("settings.section.plugins"), section: "settings.group.advanced" },
+    { id: "automation", label: t("automation.title"), section: "settings.group.advanced" },
     { id: "cli", label: t("settings.section.cli"), section: "settings.group.advanced" },
     { id: "shortcuts", label: t("settings.section.shortcuts"), section: "settings.group.help" },
     { id: "about", label: t("settings.section.about"), section: "settings.group.help" },
   ]);
 
   const hiddenOnCompact = new Set<string>([]);
-  const hiddenOnMobile = new Set<string>(["cli", "dynamic-discovery", "shortcuts", "plugins"]);
+  const hiddenOnMobile = new Set<string>(["cli", "automation", "dynamic-discovery", "shortcuts", "plugins"]);
   // ConnectionEditor removes the desktop-only Serial type on mobile;
   // the unified connection-list entry itself remains available.
   let menu = $derived(

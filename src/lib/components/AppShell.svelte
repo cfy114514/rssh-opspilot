@@ -3,6 +3,7 @@
     import {invoke} from "@tauri-apps/api/core";
     import {getCurrentWindow} from "@tauri-apps/api/window";
     import type {Profile, Tab, Group} from "../stores/app.svelte.ts";
+    import * as automation from "../stores/automation.svelte.ts";
     import * as app from "../stores/app.svelte.ts";
     import * as updates from "../stores/updates.svelte.ts";
     import * as syncStatus from "../stores/sync.svelte.ts";
@@ -278,6 +279,9 @@
         });
         return () => {
             startup.abort();
+            if (automation.connection() || automation.busy()) {
+                void automation.stop().catch(error => console.warn("[automation] cleanup failed", error));
+            }
             detachKeydown();
             detachKeyup();
         };
@@ -1416,6 +1420,14 @@
             {@render sideAside(kind, "left")}
         {/each}
         <div class="main-area">
+            {#if automation.connection()}
+                <div class="automation-status" role="status">
+                    <button class="btn btn-sm" onclick={() => app.navigate("automation")}>
+                        {automation.writable() ? t("automation.active_write") : t("automation.active_read")}
+                    </button>
+                    <button class="btn btn-sm" onclick={() => automation.stop().catch(error => toast.error(errMsg(error)))}>{t("automation.stop")}</button>
+                </div>
+            {/if}
             <!-- 插件横条区：终端上/下边缘，per-tab keep-alive，无匹配插件不占位 -->
             {#if resourcePanesAllowed && pluginHostOk && pluginStripPlugins.length > 0 && pluginStripTabs.length > 0 && pluginStripPos === "top"}
                 <PluginStrip
@@ -1534,6 +1546,7 @@
 </div>
 
 <style>
+    .automation-status { display: flex; flex: none; gap: 8px; padding: 6px 12px; background: var(--surface); border-bottom: 1px solid var(--divider); }
     /* Flow layout: the bar (sidebar rail / stripbar) and .content are flex
        items, so the bar occupies real space and content takes the rest. No
        fixed positioning, no margin reservation — content can never slide

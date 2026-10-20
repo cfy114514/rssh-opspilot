@@ -56,6 +56,7 @@ fn build_state() -> AppResult<AppState> {
         log::warn!("migration failed (will retry on next startup): {e}");
     }
     Ok(AppState {
+        automation: Default::default(),
         db,
         secret_store: secret_system.store,
         lifecycle_sessions: Mutex::new(HashMap::new()),
@@ -242,6 +243,18 @@ fn dispatch(
     tx: &mpsc::UnboundedSender<Message>,
 ) -> Result<Value, Value> {
     match cmd {
+        "automation_poll" => ok(state
+            .automation
+            .poll(owner, &arg::<String>(&args, "bridgeId")?)),
+        "automation_reply" => ok(state.automation.reply(
+            owner,
+            &arg::<String>(&args, "bridgeId")?,
+            arg(&args, "reply")?,
+        )),
+        "automation_stop" => {
+            state.automation.stop(owner);
+            Ok(Value::Null)
+        }
         // ---- profiles ----
         "list_profiles" => ok(crate::db::profile::list(&state.db)),
         "get_profile" => ok(crate::db::profile::get(
@@ -821,6 +834,9 @@ async fn dispatch_async(
     tx: &mpsc::UnboundedSender<Message>,
 ) -> Result<Value, Value> {
     match cmd {
+        "automation_start" => ok(state
+            .automation
+            .start(owner, arg::<bool>(&args, "writable")?)),
         "ssh_connect" => ssh_connect(state, owner, args, tx).await,
         // Async like the Tauri command, for the same reason: DNS + TCP connect
         // can block up to 10s per address and must not stall the ws event loop.
@@ -1804,6 +1820,8 @@ mod tests {
         let secret_store: Arc<dyn crate::secret::SecretStore> =
             Arc::new(crate::secret::DbStore::new(db.clone()));
         AppState {
+            #[cfg(desktop)]
+            automation: Default::default(),
             db,
             secret_store,
             lifecycle_sessions: Mutex::new(HashMap::new()),

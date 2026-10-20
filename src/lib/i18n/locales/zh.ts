@@ -2,6 +2,27 @@ import type { Messages } from "./en";
 
 /** 中文 UI 字符串。键必须与 en.ts 一致。 */
 const zh: Messages = {
+  "automation.open_console": "打开浏览器控制台",
+  "automation.title": "外部终端接入（MCP）",
+  "automation.description": "让 MCP 客户端读取并操作 RSSH 中已有的终端。选择要共享的会话，直接复用当前连接。",
+  "automation.desktop_only": "终端 MCP 接入仅在桌面和 Headless / JetBrains 中提供。",
+  "automation.active_write": "MCP 终端接入 · 已允许输入",
+  "automation.active_read": "MCP 终端接入 · 只读",
+  "automation.no_shared_sessions": "共享的会话已断开。请停止接入后重新选择会话。",
+  "automation.stop": "停止接入",
+  "automation.connect": "连接客户端",
+  "automation.connect_hint": "在支持的 MCP 客户端中配置此 Streamable HTTP 地址及 Authorization 请求头。复制的连接信息包含本次接入的临时凭据。",
+  "automation.copy_config": "复制连接信息",
+  "automation.show_config": "查看连接信息与临时凭据",
+  "automation.client_support": "ChatGPT Desktop 需要支持访问本机 MCP 的客户端模式或本地桥接。云端连接器无法访问此电脑的 127.0.0.1 地址；复制连接信息不会自动安装连接器。也可以打开浏览器控制台，由支持浏览器操作的桌面助手接管。",
+  "automation.lifetime": "仅共享当前窗口中选定的会话。关闭、重连、刷新或停止接入都会撤销授权，新会话需重新共享。使用期间请保持 RSSH 运行。",
+  "automation.select_sessions": "选择要共享的现有终端",
+  "automation.no_sessions": "请先打开一个终端连接，再回到这里。",
+  "automation.allow_input": "允许输入命令和控制键",
+  "automation.input_hint": "默认为只读。允许输入后，接入的客户端可以使用该会话的当前权限执行命令。终端画面和历史输出可能包含敏感信息。",
+  "automation.start": "开启接入",
+  "error.automation_unavailable": "终端接入已停止或属于其他窗口，请重新开启接入。",
+
   // ── 通用 ──
   "common.save": "保存",
   "common.saving": "保存中…",

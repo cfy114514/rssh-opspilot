@@ -1,4 +1,6 @@
 mod ai;
+#[cfg(desktop)]
+mod automation;
 mod commands;
 #[cfg(desktop)]
 pub use commands::cli::CLI_VERSION;
@@ -114,6 +116,8 @@ pub fn run() {
             }
 
             app.manage(AppState {
+                #[cfg(desktop)]
+                automation: Default::default(),
                 db,
                 secret_store: secret_system.store,
                 lifecycle_sessions: Mutex::new(HashMap::new()),
@@ -141,6 +145,14 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            #[cfg(desktop)]
+            commands::automation::automation_start,
+            #[cfg(desktop)]
+            commands::automation::automation_poll,
+            #[cfg(desktop)]
+            commands::automation::automation_reply,
+            #[cfg(desktop)]
+            commands::automation::automation_stop,
             // profile & credential
             commands::profile::list_profiles,
             commands::profile::get_profile,
