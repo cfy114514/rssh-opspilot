@@ -67,6 +67,8 @@ pub struct OwnedWaiter<T> {
 }
 
 pub struct AppState {
+    #[cfg(desktop)]
+    pub automation: crate::automation::Automation,
     pub db: Arc<Db>,
     pub secret_store: Arc<dyn SecretStore>,
     /// Single source of truth for connection identity, ownership and lifecycle.

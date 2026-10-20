@@ -1114,6 +1114,8 @@ pub fn reconcile_owner(
     owner: &SessionOwner,
     active_ids: Vec<String>,
 ) -> AppResult<usize> {
+    #[cfg(desktop)]
+    state.automation.stop(owner);
     let active: HashSet<String> = active_ids.into_iter().collect();
     let (closed, removed) = remove_owned_resources(state, owner, Some(&active))?;
     close_removed(removed);
@@ -1123,6 +1125,8 @@ pub fn reconcile_owner(
 }
 
 pub fn close_owner(state: &AppState, owner: &SessionOwner) {
+    #[cfg(desktop)]
+    state.automation.stop(owner);
     match remove_owned_resources(state, owner, None) {
         Ok((_, removed)) => close_removed(removed),
         Err(error) => log::warn!("close owner sessions failed: {error}"),
@@ -1261,6 +1265,8 @@ mod tests {
         let secret_store: Arc<dyn crate::secret::SecretStore> =
             Arc::new(crate::secret::DbStore::new(db.clone()));
         AppState {
+            #[cfg(desktop)]
+            automation: Default::default(),
             db,
             secret_store,
             lifecycle_sessions: Mutex::new(HashMap::new()),

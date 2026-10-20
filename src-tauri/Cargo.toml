@@ -92,6 +92,9 @@ libc = "0.2"
 # Cargo target tables cannot use Tauri's `desktop` cfg alias, so keep this as a
 # positive OS list instead of treating every non-mobile target as a desktop.
 [target.'cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))'.dependencies]
+axum = { version = "0.8.9", default-features = false, features = ["http1", "tokio"] }
+rmcp = { version = "3.6.0", default-features = false, features = ["server", "transport-streamable-http-server"] }
+tokio-util = "0.7"
 portable-pty = "0.8"
 # Serial console transport — a 3rd byte-stream alongside SSH/PTY. macOS uses
 # IOKit and Windows uses the Win32 API (no extra system dep); Linux links

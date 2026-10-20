@@ -1,4 +1,6 @@
 #[cfg(desktop)]
+pub mod automation;
+#[cfg(desktop)]
 pub mod cli;
 pub mod command_block;
 pub mod discovery;

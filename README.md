@@ -266,6 +266,61 @@ title bar stops the embedded server.
 
 ## Development
 
+### External terminal access (MCP and browser console)
+
+Open **Settings → External terminal access (MCP)**, select existing connected
+terminals, and click **Start access**. Access starts read-only; enable
+**Allow commands and control keys** to let a client operate the selected sessions.
+The persistent workbench indicator includes **Stop access**.
+
+- **Browser:** click **Open browser console**. It shows the shared terminal's
+  parsed screen, command input, Enter, Ctrl+C, and other control keys. A desktop
+  assistant with browser interaction can use this page directly. It operates the
+  same live session you see in RSSH. Keep the RSSH window running.
+- **MCP:** copy the connection details into a client supporting **Streamable
+  HTTP** with an `Authorization: Bearer …` header. The URL is
+  `http://127.0.0.1:<temporary-port>/mcp`; the token is generated for each start.
+  Connection details describe the transport, URL, and headers; adapt them to your
+  client's configuration format.
+
+ChatGPT Desktop needs a mode or local bridge that can reach local MCP servers,
+or browser interaction for the console. A cloud-hosted connector cannot reach
+your computer's `127.0.0.1`. RSSH does not automatically install a ChatGPT connector
+or expose your terminal publicly.
+
+The official Rust MCP SDK implements the protocol. Available tools:
+
+| Tool | Arguments | Behavior |
+| --- | --- | --- |
+| `list_terminals` | none | List only sessions shared from this window, including session IDs and labels |
+| `read_terminal` | `sessionId`, optional `lines` (1–500), `after` | Parsed active buffer/scrollback, cursor, dimensions, pending render bytes, and incremental raw output |
+| `write_terminal` | `sessionId`, `text`, optional `enter` | Deliver UTF-8 input; `enter: true` submits it |
+| `send_key` | `sessionId`, `key` | Enter, Ctrl+C/D/Z, Tab, Escape, Backspace, or arrow keys |
+
+Read before writing. A write acknowledges input delivery, **not command
+completion**; read again to observe results. Pass the returned `output.cursor`
+as `after` to retrieve new raw output chunks, which may contain ANSI sequences.
+The output journal is bounded in memory (262,144 UTF-16 code units and 1,024 chunks
+per terminal); `truncated` reports lost output and `reset` reports an obsolete
+cursor. The parsed screen remains available independently of the journal. Never
+automatically retry a timed-out write or key: input may already have arrived.
+
+Only explicitly selected transport session IDs are shared. New connections and
+reconnections require sharing again; other RSSH windows are isolated. Stopping,
+window closure, or reload revokes access. A frontend that stops responding for
+10 seconds also revokes the endpoint. Tokens, grants, and output journals stay
+in memory and are excluded from settings and synchronization. The browser token
+travels in a URL fragment, is removed from the address bar, and is never saved in
+browser storage; reopen the console from RSSH after reloading it. Terminal history
+can contain sensitive information. Normal serial input honors EOL and slow-send;
+serial hex/line input modes require switching to normal mode first.
+
+Desktop GUI and Headless/JetBrains use the same bridge through their existing IPC
+adapters. In Headless/JetBrains, the browser console must run on the server's
+computer. Mobile does not expose this desktop listener. The CLI does not start a
+parallel shell or a second GUI IPC channel; external tools use the MCP endpoint
+of the running GUI/headless window.
+
 See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## License

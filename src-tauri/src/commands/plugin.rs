@@ -955,6 +955,8 @@ mod tests {
             std::sync::Arc::new(crate::secret::DbStore::new(db.clone()));
         let data_dir = tempfile::tempdir().unwrap().keep();
         AppState {
+            #[cfg(desktop)]
+            automation: Default::default(),
             db,
             secret_store,
             lifecycle_sessions: Default::default(),

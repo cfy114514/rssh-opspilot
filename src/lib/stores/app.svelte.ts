@@ -1,3 +1,4 @@
+import type { AutomationTerminal } from "../terminal/automation.ts";
 import { invoke } from "@tauri-apps/api/core";
 import * as ai from "../ai/store.svelte.ts";
 import * as pluginStore from "../plugins/store.svelte.ts";
@@ -68,6 +69,7 @@ export type SettingsPage =
   | "groups"
   | "group-edit"
   | "cli"
+  | "automation"
   | "shortcuts"
   | "appearance"
   | "ai"
@@ -720,6 +722,7 @@ export function sendArrow(dir: ArrowDir, mod: number) { _terminalArrowSender?.(d
 
 /* ─── Per-tab terminal copy/paste controls ─── */
 interface TerminalControls {
+  automation?: AutomationTerminal;
   getSelection(): string;
   paste(text: string): void;
   /** Inject user text as input (snippet / broadcast). The pane applies its own
@@ -742,6 +745,9 @@ export function registerTerminalControls(tabId: string, controls: TerminalContro
 }
 export function unregisterTerminalControls(tabId: string) {
   _terminalControls.delete(tabId);
+}
+export function automationTerminal(tabId: string): AutomationTerminal | undefined {
+  return _terminalControls.get(tabId)?.automation;
 }
 export function terminalGetSelection(tabId: string): string {
   return _terminalControls.get(tabId)?.getSelection() ?? "";
