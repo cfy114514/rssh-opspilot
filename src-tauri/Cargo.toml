@@ -84,7 +84,7 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "rus
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls-native-roots", "stream", "system-proxy"] }
 
 # Raw termios access for the serial `xany` (IXANY) flag — the serialport crate
-# doesn't expose it. Only the Unix desktop targets compile the serial module.
+# doesn't expose it. Discovery also checks file ownership on Unix desktops.
 [target.'cfg(any(target_os = "macos", target_os = "linux"))'.dependencies]
 libc = "0.2"
 
@@ -107,6 +107,7 @@ arboard = "3"
 [target.'cfg(any(target_os = "macos", target_os = "ios"))'.dependencies]
 keyring = { version = "3", features = ["apple-native"] }
 [target.'cfg(target_os = "windows")'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_Storage_FileSystem", "Win32_System_Threading"] }
 keyring = { version = "3", features = ["windows-native"] }
 [target.'cfg(target_os = "linux")'.dependencies]
 keyring = { version = "3", features = ["sync-secret-service", "crypto-rust"] }

@@ -243,16 +243,21 @@ fn dispatch(
     tx: &mpsc::UnboundedSender<Message>,
 ) -> Result<Value, Value> {
     match cmd {
-        "automation_poll" => ok(state
-            .automation
-            .poll(owner, &arg::<String>(&args, "bridgeId")?)),
+        "automation_status" => ok(state.automation.status()),
+        "automation_poll" => ok(state.automation.poll(
+            owner,
+            &arg::<String>(&args, "bridgeId")?,
+            arg(&args, "sessions")?,
+        )),
         "automation_reply" => ok(state.automation.reply(
             owner,
             &arg::<String>(&args, "bridgeId")?,
             arg(&args, "reply")?,
         )),
         "automation_stop" => {
-            state.automation.stop(owner);
+            state
+                .automation
+                .stop_bridge(owner, optional_string_arg(&args, "bridgeId")?.as_deref());
             Ok(Value::Null)
         }
         // ---- profiles ----

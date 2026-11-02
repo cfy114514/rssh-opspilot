@@ -38,6 +38,8 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Cmd {
+    /// Bridge a configured local MCP client to the active RSSH terminal access
+    McpProxy,
     /// Print the CLI version
     Version,
     /// Manage SSH profiles
@@ -265,6 +267,13 @@ fn main() {
         commands::completions::print_completions(shell);
         return;
     }
+    if matches!(cli.command, Some(Cmd::McpProxy)) {
+        if let Err(error) = commands::mcp_proxy::run() {
+            eprintln!("MCP proxy: {error}");
+            std::process::exit(1);
+        }
+        return;
+    }
     if matches!(cli.command, Some(Cmd::Version)) {
         println!("{}", rssh_lib::CLI_VERSION);
         return;
@@ -291,6 +300,7 @@ fn main() {
 
     let result = match cli.command {
         None => commands::ls::cmd_list_profiles(&conn, None),
+        Some(Cmd::McpProxy) => unreachable!("handled before database initialization"),
         Some(Cmd::Version) => unreachable!("handled before database initialization"),
         Some(Cmd::Profile { action }) => match action {
             ProfileCmd::List { query } => commands::ls::cmd_list_profiles(&conn, query.as_deref()),

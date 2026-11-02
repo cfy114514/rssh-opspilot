@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { createTerminalOutputJournal, executeTerminalRequest, prepareAutomationInput, readAutomationScreen, type AutomationRequest, type AutomationWriteOptions } from "./automation.ts";
+import { createAutomationSubmitObserver, createTerminalOutputJournal, executeTerminalRequest, prepareAutomationInput, readAutomationScreen, type AutomationRequest, type AutomationWriteOptions } from "./automation.ts";
 
 describe("terminal output journal", () => {
   it("decodes split UTF-8 and reads only output after a cursor", () => {
@@ -40,6 +40,13 @@ describe("terminal output journal", () => {
 });
 
 describe("automation transport input", () => {
+  it("observes CR, LF and split CRLF as individual submitted commands", () => {
+    const observe = vi.fn();
+    const feed = createAutomationSubmitObserver(observe);
+    for (const chunk of [[112, 119, 100], [13], [10], [105, 100, 10], [13]]) feed(chunk);
+    expect(observe.mock.calls).toEqual([["\r"], ["\r"], ["\r"]]);
+  });
+
   it.each([
     ["del", "\x7f"],
     ["bs", "\x08"],
@@ -114,7 +121,7 @@ describe("terminal operation boundary", () => {
     await expect(executeTerminalRequest(f.request("write_terminal", { text: "id" }), f.access)).rejects.toThrow("read-only");
     f.access.writable = true;
     f.reconnect();
-    await expect(executeTerminalRequest(f.request("send_key", { key: "Enter" }), f.access)).rejects.toThrow("not shared");
+    await expect(executeTerminalRequest(f.request("send_key", { key: "Enter" }), f.access)).rejects.toThrow("unavailable");
     f.revoke();
     await expect(executeTerminalRequest(f.request("list_terminals"), f.access)).rejects.toThrow("stopped");
     expect(f.write).not.toHaveBeenCalled();

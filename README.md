@@ -268,15 +268,21 @@ title bar stops the embedded server.
 
 ### External terminal access (MCP and browser console)
 
-Open **Settings → External terminal access (MCP)**, select existing connected
-terminals, and click **Start access**. Access starts read-only; enable
-**Allow commands and control keys** to let a client operate the selected sessions.
+Open **Settings → External terminal access (MCP)** and click **Start access**.
+Access starts read-only; enable **Allow commands and control keys** to let a
+client operate terminals across windows of this RSSH instance, including future connections.
 The persistent workbench indicator includes **Stop access**.
 
 - **Browser:** click **Open browser console**. It shows the shared terminal's
   parsed screen, command input, Enter, Ctrl+C, and other control keys. A desktop
   assistant with browser interaction can use this page directly. It operates the
   same live session you see in RSSH. Keep the RSSH window running.
+- **Codex:** install the RSSH CLI as `rssh` on your `PATH` and register once
+  with `codex mcp add rssh -- rssh mcp-proxy`. This command changes your
+  Codex MCP configuration; RSSH does not run it for you. Enable RSSH access
+  before starting or restarting Codex. The proxy discovers the current local
+  endpoint automatically; other clients supporting stdio can use the same
+  `rssh mcp-proxy` command.
 - **MCP:** copy the connection details into a client supporting **Streamable
   HTTP** with an `Authorization: Bearer …` header. The URL is
   `http://127.0.0.1:<temporary-port>/mcp`; the token is generated for each start.
@@ -292,7 +298,7 @@ The official Rust MCP SDK implements the protocol. Available tools:
 
 | Tool | Arguments | Behavior |
 | --- | --- | --- |
-| `list_terminals` | none | List only sessions shared from this window, including session IDs and labels |
+| `list_terminals` | none | List connected sessions from participating windows, including session IDs and labels |
 | `read_terminal` | `sessionId`, optional `lines` (1–500), `after` | Parsed active buffer/scrollback, cursor, dimensions, pending render bytes, and incremental raw output |
 | `write_terminal` | `sessionId`, `text`, optional `enter` | Deliver UTF-8 input; `enter: true` submits it |
 | `send_key` | `sessionId`, `key` | Enter, Ctrl+C/D/Z, Tab, Escape, Backspace, or arrow keys |
@@ -305,11 +311,14 @@ per terminal); `truncated` reports lost output and `reset` reports an obsolete
 cursor. The parsed screen remains available independently of the journal. Never
 automatically retry a timed-out write or key: input may already have arrived.
 
-Only explicitly selected transport session IDs are shared. New connections and
-reconnections require sharing again; other RSSH windows are isolated. Stopping,
-window closure, or reload revokes access. A frontend that stops responding for
-10 seconds also revokes the endpoint. Tokens, grants, and output journals stay
-in memory and are excluded from settings and synchronization. The browser token
+All connected terminals in this RSSH instance are shared while access is enabled,
+including new windows, new connections and reconnections. Independent RSSH or
+headless server processes remain isolated. Stopping access in any participating
+window revokes the endpoint; closing a window removes its sessions. If all
+frontends stop responding for 10 seconds the endpoint is revoked. A private per-bridge discovery file contains the temporary URL and token and is
+removed when access stops; after a crash a stale record may remain but its endpoint
+is no longer usable. Discovery records and output journals are excluded from
+settings and synchronization. The browser token
 travels in a URL fragment, is removed from the address bar, and is never saved in
 browser storage; reopen the console from RSSH after reloading it. Terminal history
 can contain sensitive information. Normal serial input honors EOL and slow-send;
@@ -317,9 +326,8 @@ serial hex/line input modes require switching to normal mode first.
 
 Desktop GUI and Headless/JetBrains use the same bridge through their existing IPC
 adapters. In Headless/JetBrains, the browser console must run on the server's
-computer. Mobile does not expose this desktop listener. The CLI does not start a
-parallel shell or a second GUI IPC channel; external tools use the MCP endpoint
-of the running GUI/headless window.
+computer. Mobile does not expose this desktop listener. The CLI proxy connects to the running GUI/headless MCP endpoint and does not
+start a parallel shell.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md).
 

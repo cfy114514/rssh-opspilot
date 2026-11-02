@@ -6,15 +6,13 @@
   import { writeText } from "../clipboard.ts";
   import { toast } from "../stores/toast.svelte.ts";
 
-  let selected = $state<string[]>([]);
   let allowInput = $state(false);
-  let sessions = $derived(app.connectedSessions());
   let connection = $derived(automation.connection());
   let config = $derived(automation.connectionConfig());
 
   async function start() {
     try {
-      await automation.start(selected.filter(id => sessions.some(s => s.sessionId === id)), allowInput);
+      await automation.start(allowInput);
     } catch (error) { toast.error(errMsg(error)); }
   }
   async function stop() {
@@ -22,6 +20,10 @@
   }
   async function copy() {
     try { await writeText(config); toast.success(t("about.copied")); }
+    catch (error) { toast.error(errMsg(error)); }
+  }
+  async function copyCodexCommand() {
+    try { await writeText("codex mcp add rssh -- rssh mcp-proxy"); toast.success(t("about.copied")); }
     catch (error) { toast.error(errMsg(error)); }
   }
   async function openConsole() {
@@ -51,6 +53,10 @@
       <code>{connection.endpoint}</code>
       <button class="btn" onclick={stop}>{t("automation.stop")}</button>
     </div>
+    <h4>{t("automation.codex_title")}</h4>
+    <p>{t("automation.codex_hint")}</p>
+    <code>codex mcp add rssh -- rssh mcp-proxy</code>
+    <button class="btn" onclick={copyCodexCommand}>{t("automation.codex_copy")}</button>
     <h4>{t("automation.connect")}</h4>
     <button class="btn btn-accent" onclick={openConsole}>{t("automation.open_console")}</button>
     <p>{t("automation.connect_hint")}</p>
@@ -62,23 +68,12 @@
     <p>{t("automation.client_support")}</p>
     <p>{t("automation.lifetime")}</p>
   {:else}
-    <fieldset disabled={automation.busy()}>
-      <legend>{t("automation.select_sessions")}</legend>
-      {#each sessions as session (session.sessionId)}
-        <label class="choice">
-          <input type="checkbox" value={session.sessionId} bind:group={selected} />
-          <span>{session.label} · {session.type}</span>
-        </label>
-      {:else}
-        <p>{t("automation.no_sessions")}</p>
-      {/each}
-    </fieldset>
     <label class="choice">
       <input type="checkbox" bind:checked={allowInput} disabled={automation.busy()} />
       <span>{t("automation.allow_input")}</span>
     </label>
     <p>{t("automation.input_hint")}</p>
-    <button class="btn btn-accent" onclick={start} disabled={automation.busy() || !selected.some(id => sessions.some(s => s.sessionId === id))}>
+    <button class="btn btn-accent" onclick={start} disabled={automation.busy()}>
       {automation.busy() ? t("common.loading") : t("automation.start")}
     </button>
   {/if}
@@ -89,7 +84,7 @@
   .page { padding: 24px; display: flex; flex-direction: column; gap: 16px; min-width: 0; }
   h3, h4, p { margin: 0; }
   p { color: var(--text-sub); font-size: 13px; line-height: 1.6; }
-  .card, fieldset { padding: 16px; border: 1px solid var(--divider); border-radius: var(--radius); display: flex; flex-direction: column; gap: 12px; }
+  .card { padding: 16px; border: 1px solid var(--divider); border-radius: var(--radius); display: flex; flex-direction: column; gap: 12px; }
   .card { background: var(--surface); }
   .choice { display: flex; gap: 10px; align-items: center; font-size: 13px; overflow-wrap: anywhere; }
   button { align-self: flex-start; }

@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { Terminal } from "@xterm/xterm";
 import { createCommandBlockTracker } from "./command-blocks.ts";
+import { createAutomationSubmitObserver, executeTerminalRequest } from "./automation.ts";
 
 /* ─────────────────────────────────────────────────────────────
  * Fake xterm.js Terminal — 实现 createCommandBlockTracker 用到的
@@ -111,6 +112,42 @@ describe("createCommandBlockTracker — Enter opens blocks", () => {
     const t = createCommandBlockTracker(f.term);
     expect(t.blocks.length).toBe(0);
     t.dispose();
+  });
+
+  it("tracks submitted input from outside xterm and ignores the alternate buffer", () => {
+    const f = fakeTerm();
+    const t = createCommandBlockTracker(f.term);
+    t.observeInput("pwd\r");
+    expect(t.blocks).toHaveLength(1);
+    f.setBuffer("alternate");
+    t.observeInput("\r");
+    expect(t.blocks).toHaveLength(1);
+    t.dispose();
+  });
+
+  it("splits successive MCP submissions after a session reconnect", async () => {
+    const f = fakeTerm();
+    const tracker = createCommandBlockTracker(f.term);
+    let sessionId = "first";
+    const access = {
+      sessions: () => [{ sessionId, tabId: "tab", label: "host", type: "ssh" }],
+      terminal: () => ({
+        read: () => ({}),
+        write: async (options: { text: string }) => {
+          const observe = createAutomationSubmitObserver(data => tracker.observeInput(data));
+          observe([...new TextEncoder().encode(options.text)]);
+        },
+      }),
+      writable: true,
+      active: () => true,
+    };
+    for (const text of ["pwd", "whoami"]) {
+      await executeTerminalRequest({ id: text, name: "write_terminal", arguments: { sessionId, text, enter: true }, expiresAt: Date.now() + 10000 }, access);
+    }
+    sessionId = "reconnected";
+    await executeTerminalRequest({ id: "third", name: "send_key", arguments: { sessionId, key: "Enter" }, expiresAt: Date.now() + 10000 }, access);
+    expect(tracker.blocks).toHaveLength(3);
+    tracker.dispose();
   });
 
   it("Enter in normal buffer opens a new block", () => {
@@ -445,6 +482,19 @@ describe("createCommandBlockTracker — prompt mode", () => {
     expect(tracker.blocks[0].end?.line).toBe(1);
     expect(tracker.blocks[1].start.line).toBe(2);
     expect(tracker.blocks[1].end).toBeNull();
+    tracker.dispose();
+    term.dispose();
+  });
+
+  it("tracks successive externally submitted commands in prompt mode", async () => {
+    const term = new Terminal({ allowProposedApi: true, scrollback: 1000 });
+    const tracker = createCommandBlockTracker(term, "prompt");
+    await writeParsedP(term, "alice@host:~$ ");
+    for (const command of ["pwd", "whoami"]) {
+      tracker.observeInput(`${command}\r`);
+      await writeParsedP(term, `${command}\r\noutput\r\nalice@host:~$ `);
+    }
+    expect(tracker.blocks).toHaveLength(3);
     tracker.dispose();
     term.dispose();
   });

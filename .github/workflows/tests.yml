@@ -53,3 +53,24 @@ jobs:
       - name: Backend tests (cargo)
         working-directory: src-tauri
         run: cargo test
+
+  windows-mcp:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+      - name: Windows discovery and proxy tests
+        working-directory: src-tauri
+        run: |
+          cargo test --features cli --lib automation_discovery::
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo test --features cli --test mcp_proxy
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

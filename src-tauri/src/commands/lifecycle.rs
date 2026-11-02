@@ -1115,7 +1115,7 @@ pub fn reconcile_owner(
     active_ids: Vec<String>,
 ) -> AppResult<usize> {
     #[cfg(desktop)]
-    state.automation.stop(owner);
+    state.automation.detach(owner);
     let active: HashSet<String> = active_ids.into_iter().collect();
     let (closed, removed) = remove_owned_resources(state, owner, Some(&active))?;
     close_removed(removed);
@@ -1126,7 +1126,7 @@ pub fn reconcile_owner(
 
 pub fn close_owner(state: &AppState, owner: &SessionOwner) {
     #[cfg(desktop)]
-    state.automation.stop(owner);
+    state.automation.detach(owner);
     match remove_owned_resources(state, owner, None) {
         Ok((_, removed)) => close_removed(removed),
         Err(error) => log::warn!("close owner sessions failed: {error}"),

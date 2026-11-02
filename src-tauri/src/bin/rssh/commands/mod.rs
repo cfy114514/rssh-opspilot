@@ -7,3 +7,5 @@ pub mod ls;
 pub mod open;
 pub mod opspilot_memory;
 pub mod rm;
+
+pub mod mcp_proxy;
