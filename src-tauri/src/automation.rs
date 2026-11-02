@@ -134,7 +134,7 @@ impl Automation {
         let info = bridge.info.clone();
         // The registration belongs to this bridge alone and is removed as soon
         // as it is cancelled, even if other tasks still hold a bridge reference.
-        #[cfg(all(unix, not(test)))]
+        #[cfg(not(test))]
         {
             let registration = crate::automation_discovery::publish(
                 &crate::automation_discovery::DiscoveryInfo {

@@ -3,7 +3,7 @@ import type { Messages } from "./en";
 /** 中文 UI 字符串。键必须与 en.ts 一致。 */
 const zh: Messages = {
   "automation.codex_title": "连接 Codex",
-  "automation.codex_hint": "Linux 和 macOS 可用：执行下方命令一次完成注册（需要 rssh 在 PATH 中）。该命令会修改 Codex 的 MCP 配置。请在开启接入后启动或重启 Codex。其他支持 stdio 的 MCP 客户端可使用 rssh mcp-proxy；暂不支持 Windows。",
+  "automation.codex_hint": "执行下方命令一次完成注册（需要 RSSH CLI 在 PATH 中）。该命令会修改 Codex 的 MCP 配置。请在开启接入后启动或重启 Codex。其他支持 stdio 的 MCP 客户端可使用 rssh mcp-proxy。",
   "automation.codex_copy": "复制 Codex 注册命令",
   "automation.open_console": "打开浏览器控制台",
   "automation.title": "外部终端接入（MCP）",

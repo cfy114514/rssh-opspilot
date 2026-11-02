@@ -1,4 +1,4 @@
-#![cfg(all(feature = "cli", unix))]
+#![cfg(all(feature = "cli", any(unix, windows)))]
 use rssh_lib::automation_discovery::{publish_at, DiscoveryInfo};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpListener;
@@ -52,7 +52,7 @@ fn stdio_discovers_live_bridge_and_reports_revocation() {
     });
     let mut child = Command::new(env!("CARGO_BIN_EXE_rssh-cli"))
         .arg("mcp-proxy")
-        .env("HOME", temp.path())
+        .env("RSSH_MCP_DISCOVERY_DIR", &dir)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())

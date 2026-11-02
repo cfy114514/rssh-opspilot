@@ -1,7 +1,7 @@
 /** English UI strings. Keep keys stable, sorted by area. */
 const en = {
   "automation.codex_title": "Connect Codex",
-  "automation.codex_hint": "On Linux and macOS, register once with the command below (requires rssh in PATH). This changes your Codex MCP configuration. Start or restart Codex after enabling access. Other stdio MCP clients can use rssh mcp-proxy; Windows is not yet supported.",
+  "automation.codex_hint": "Register once with the command below (requires the RSSH CLI in PATH). This changes your Codex MCP configuration. Start or restart Codex after enabling access. Other stdio MCP clients can use rssh mcp-proxy.",
   "automation.codex_copy": "Copy Codex registration command",
   "automation.open_console": "Open browser console",
   "automation.title": "External terminal access (MCP)",

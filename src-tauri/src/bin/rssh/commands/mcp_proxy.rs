@@ -1,6 +1,6 @@
 //! Stdio-to-Streamable-HTTP adapter for local MCP clients. stdout is reserved
 //! for JSON-RPC; discovery credentials never appear in command arguments.
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 mod unix {
     use rssh_lib::automation_discovery::{self, DiscoveryInfo};
     use serde_json::{json, Value};
@@ -205,9 +205,9 @@ mod unix {
     }
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 pub use unix::run;
-#[cfg(not(unix))]
+#[cfg(not(any(unix, windows)))]
 pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     Err("MCP discovery is supported on Linux and macOS only".into())
 }

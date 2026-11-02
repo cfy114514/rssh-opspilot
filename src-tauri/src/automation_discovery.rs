@@ -3,7 +3,9 @@
 //! newer bridge's record. A crashed process leaves only an unusable token.
 use serde::{Deserialize, Serialize};
 use std::io;
-use std::path::{Path, PathBuf};
+#[cfg(unix)]
+use std::path::Path;
+use std::path::PathBuf;
 
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -21,8 +23,11 @@ impl Drop for Registration {
 }
 
 fn discovery_dir() -> io::Result<PathBuf> {
-    dirs::home_dir()
-        .map(|home| home.join(".rssh").join("mcp-discovery"))
+    std::env::var_os("RSSH_MCP_DISCOVERY_DIR")
+        .filter(|p| !p.is_empty())
+        .map(PathBuf::from)
+        .filter(|path| path.is_absolute())
+        .or_else(|| dirs::home_dir().map(|home| home.join(".rssh").join("mcp-discovery")))
         .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "home directory unavailable"))
 }
 
@@ -182,7 +187,7 @@ pub fn candidates() -> io::Result<Vec<DiscoveryInfo>> {
     candidates_at(&discovery_dir()?)
 }
 
-#[cfg(not(unix))]
+#[cfg(not(any(unix, windows)))]
 pub fn publish(_info: &DiscoveryInfo) -> io::Result<Registration> {
     Err(io::Error::new(
         io::ErrorKind::Unsupported,
@@ -250,3 +255,9 @@ mod tests {
         assert!(candidates_at(&dir).unwrap().is_empty());
     }
 }
+
+#[cfg(windows)]
+#[path = "automation_discovery/windows.rs"]
+mod windows;
+#[cfg(windows)]
+pub use windows::{candidates, candidates_at, publish, publish_at};

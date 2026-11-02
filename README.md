@@ -277,12 +277,12 @@ The persistent workbench indicator includes **Stop access**.
   parsed screen, command input, Enter, Ctrl+C, and other control keys. A desktop
   assistant with browser interaction can use this page directly. It operates the
   same live session you see in RSSH. Keep the RSSH window running.
-- **Codex (Linux/macOS):** install the RSSH CLI as `rssh` on your `PATH` and register once
+- **Codex:** install the RSSH CLI as `rssh` on your `PATH` and register once
   with `codex mcp add rssh -- rssh mcp-proxy`. This command changes your
   Codex MCP configuration; RSSH does not run it for you. Enable RSSH access
   before starting or restarting Codex. The proxy discovers the current local
   endpoint automatically; other clients supporting stdio can use the same
-  `rssh mcp-proxy` command. Windows does not yet support this proxy.
+  `rssh mcp-proxy` command.
 - **MCP:** copy the connection details into a client supporting **Streamable
   HTTP** with an `Authorization: Bearer …` header. The URL is
   `http://127.0.0.1:<temporary-port>/mcp`; the token is generated for each start.
@@ -315,8 +315,7 @@ All connected terminals in this RSSH instance are shared while access is enabled
 including new windows, new connections and reconnections. Independent RSSH or
 headless server processes remain isolated. Stopping access in any participating
 window revokes the endpoint; closing a window removes its sessions. If all
-frontends stop responding for 10 seconds the endpoint is revoked. On Linux/macOS,
-a private per-bridge discovery file contains the temporary URL and token and is
+frontends stop responding for 10 seconds the endpoint is revoked. A private per-bridge discovery file contains the temporary URL and token and is
 removed when access stops; after a crash a stale record may remain but its endpoint
 is no longer usable. Discovery records and output journals are excluded from
 settings and synchronization. The browser token
