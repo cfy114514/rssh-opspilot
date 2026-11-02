@@ -39,6 +39,8 @@ export interface CommandBlockTracker extends IDisposable {
   readonly blocks: ReadonlyArray<CommandBlock>;
   /** Called whenever blocks array changes (add / close / gc). */
   onChange(fn: () => void): IDisposable;
+  /** Observe input delivered outside xterm (for example MCP). */
+  observeInput(data: string): void;
 }
 
 /** Golden-angle HSL cycling — infinite palette, no adjacent-hue collisions. */
@@ -153,17 +155,16 @@ export function createCommandBlockTracker(
 
   // Enter mode splits on every `\r` (including multiline paste). Prompt mode
   // merely rearms its output-side detector after the submitted command.
-  disposables.push(
-    term.onData((data: string) => {
-      if (term.buffer.active.type === "alternate") return;
-      for (const ch of data) {
-        if (ch === "\r") {
-          if (splitMode === "enter") splitAt();
-          else waitForReturnedPrompt();
-        }
+  const observeInput = (data: string) => {
+    if (term.buffer.active.type === "alternate") return;
+    for (const ch of data) {
+      if (ch === "\r") {
+        if (splitMode === "enter") splitAt();
+        else waitForReturnedPrompt();
       }
-    }),
-  );
+    }
+  };
+  disposables.push(term.onData(observeInput));
 
   if (splitMode === "prompt") {
     disposables.push(
@@ -203,6 +204,7 @@ export function createCommandBlockTracker(
 
   return {
     get blocks() { return blocks; },
+    observeInput,
     onChange(fn) {
       listeners.add(fn);
       return { dispose: () => listeners.delete(fn) };

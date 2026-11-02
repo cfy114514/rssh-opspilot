@@ -1,6 +1,8 @@
 mod ai;
 #[cfg(desktop)]
 mod automation;
+#[cfg(desktop)]
+pub mod automation_discovery;
 mod commands;
 #[cfg(desktop)]
 pub use commands::cli::CLI_VERSION;
@@ -147,6 +149,8 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             #[cfg(desktop)]
             commands::automation::automation_start,
+            #[cfg(desktop)]
+            commands::automation::automation_status,
             #[cfg(desktop)]
             commands::automation::automation_poll,
             #[cfg(desktop)]

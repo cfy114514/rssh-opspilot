@@ -1,6 +1,8 @@
 use tauri::State;
 
-use crate::automation::{ConnectionInfo, TerminalReply, TerminalRequest};
+use crate::automation::{
+    AutomationStatus, ConnectionInfo, SharedTerminal, TerminalReply, TerminalRequest,
+};
 use crate::error::AppResult;
 use crate::state::{AppState, SessionOwner};
 
@@ -20,10 +22,13 @@ pub fn automation_poll(
     window: tauri::Window,
     state: State<'_, AppState>,
     bridge_id: String,
+    sessions: Vec<SharedTerminal>,
 ) -> AppResult<Vec<TerminalRequest>> {
-    state
-        .automation
-        .poll(&SessionOwner::Window(window.label().into()), &bridge_id)
+    state.automation.poll(
+        &SessionOwner::Window(window.label().into()),
+        &bridge_id,
+        sessions,
+    )
 }
 
 #[tauri::command]
@@ -41,8 +46,18 @@ pub fn automation_reply(
 }
 
 #[tauri::command]
-pub fn automation_stop(window: tauri::Window, state: State<'_, AppState>) {
-    state
-        .automation
-        .stop(&SessionOwner::Window(window.label().into()));
+pub fn automation_stop(
+    window: tauri::Window,
+    state: State<'_, AppState>,
+    bridge_id: Option<String>,
+) {
+    state.automation.stop_bridge(
+        &SessionOwner::Window(window.label().into()),
+        bridge_id.as_deref(),
+    );
+}
+
+#[tauri::command]
+pub fn automation_status(state: State<'_, AppState>) -> AppResult<Option<AutomationStatus>> {
+    state.automation.status()
 }

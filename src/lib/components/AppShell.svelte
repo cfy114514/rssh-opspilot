@@ -247,6 +247,7 @@
     onMount(() => {
         const startup = new AbortController();
         keymap.init();
+        automation.beginMonitoring();
         // Crash recovery must settle before any pane can create a replacement
         // backend resource. Otherwise reconcile([]) can race that new session.
         if (!bypassStartupReconcile) {
@@ -279,9 +280,7 @@
         });
         return () => {
             startup.abort();
-            if (automation.connection() || automation.busy()) {
-                void automation.stop().catch(error => console.warn("[automation] cleanup failed", error));
-            }
+            automation.endMonitoring();
             detachKeydown();
             detachKeyup();
         };

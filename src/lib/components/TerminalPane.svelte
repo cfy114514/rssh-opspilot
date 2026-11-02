@@ -1,5 +1,5 @@
 <script lang="ts">
-    import {createTerminalOutputJournal, prepareAutomationInput, readAutomationScreen, type AutomationWriteOptions} from "../terminal/automation.ts";
+    import {createAutomationSubmitObserver, createTerminalOutputJournal, prepareAutomationInput, readAutomationScreen, type AutomationWriteOptions} from "../terminal/automation.ts";
     import {onDestroy, onMount, untrack} from "svelte";
     import {SvelteSet} from "svelte/reactivity";
     import {Terminal, type IDisposable} from "@xterm/xterm";
@@ -1180,8 +1180,11 @@
         const bytes = Array.from(new TextEncoder().encode(text));
         maybeReleaseBacklog(text);
         const chunks = streamOpts?.slowSend ? bytes.map(byte => [byte]) : [bytes];
+        const observeSubmissions = createAutomationSubmitObserver(data => blockTracker?.observeInput(data));
         for (const data of chunks) {
             check();
+            // Observe only the chunk about to be sent, before its echo arrives.
+            observeSubmissions(data);
             await invoke(writeCmd, { sessionId: options.sessionId, data });
             if (streamOpts?.slowSend) await new Promise(resolve => setTimeout(resolve, 5));
         }

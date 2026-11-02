@@ -6,7 +6,7 @@ use tauri::{AppHandle, Manager};
 
 use crate::error::{AppError, AppResult};
 
-pub const CLI_VERSION: &str = "1.0.0";
+pub const CLI_VERSION: &str = "1.1.0";
 
 #[derive(Serialize)]
 pub struct CliStatus {
@@ -165,7 +165,7 @@ mod tests {
         assert!(version_is_older("0.9.9", CLI_VERSION));
         assert!(!version_is_older(CLI_VERSION, CLI_VERSION));
         assert!(!version_is_older("1.1.0", CLI_VERSION));
-        assert!(!version_is_older("1.0", CLI_VERSION));
+        assert!(version_is_older("1.0", CLI_VERSION));
     }
 
     #[test]

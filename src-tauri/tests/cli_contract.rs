@@ -212,7 +212,7 @@ fn version_reports_the_independent_cli_version() {
         .expect("run rssh CLI");
 
     assert!(output.status.success());
-    assert_eq!(String::from_utf8_lossy(&output.stdout), "1.0.0\n");
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "1.1.0\n");
 }
 
 #[test]

@@ -111,6 +111,20 @@ export function prepareAutomationInput(
   return text;
 }
 
+/** Report logical Enter keys just before each transport chunk is sent.
+ * CRLF is one submission even when slow-send separates its bytes. */
+export function createAutomationSubmitObserver(observe: (data: string) => void) {
+  let previousWasCr = false;
+  return (bytes: readonly number[]) => {
+    let submissions = 0;
+    for (const byte of bytes) {
+      if (byte === 13 || (byte === 10 && !previousWasCr)) submissions++;
+      previousWasCr = byte === 13;
+    }
+    if (submissions) observe("\r".repeat(submissions));
+  };
+}
+
 export interface AutomationRequest {
   id: string;
   name: string;
@@ -140,7 +154,7 @@ export async function executeTerminalRequest(
   const args = request.arguments;
   if (request.name === "list_terminals") return { terminals: access.sessions(), writable: access.writable };
   const session = access.sessions().find(s => s.sessionId === args.sessionId);
-  if (!session) throw new Error("Terminal session is not shared or has disconnected. Reconnecting requires sharing again.");
+  if (!session) throw new Error("Terminal session is unavailable or has disconnected.");
   const terminal = access.terminal(session.tabId);
   if (!terminal) throw new Error("Terminal is unavailable");
   if (request.name === "read_terminal") {
