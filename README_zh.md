@@ -80,37 +80,6 @@ rssh opspilot-memory clear --yes
 - 当前 fork 复用 RSSH 既有传输层；保留完整 OpenSSH `ProxyJump`、Agent、MFA
   行为的原生 `ssh.exe + ConPTY` 传输是下一阶段工作。
 
-### ChatGPT / Codex 订阅 Provider
-
-新增可选的 `Codex Subscription` 类型，通过官方本地 `codex app-server` 和
-ChatGPT 登录使用订阅，不经过代理，也不要求 OpenAI API Key。首版严格验证
-**Codex CLI 0.153.2**；RSSH 不自动下载安装或升级。其他版本需重新通过禁工具验收后才支持。
-
-1. 设置 → AI Provider → 选择 **Codex Subscription**。
-2. 程序路径留空自动检测，或填写已有 Codex 可执行文件的绝对路径。
-3. 点击**登录**，复制官方设备码，并在浏览器中完成设备码认证。
-4. 刷新模型目录；仅在目录存在 Luna 时预选 Luna，只有模型支持 `none` 时才默认关闭思考。
-   已保存的模型或档位失效时必须重新选择，不自动改用大模型。
-5. 保存并选用该 Provider，然后新建 AI 会话（已有会话保留原 Provider）。AI 请求仍需手动发送；提炼返回的 JSON 可进入现有预览确认流程，
-   确认前不写入离线知识库。
-
-该 Provider 只生成文本／JSON，不提供 RSSH 命令工具，不探测远端 Shell，不加载个人 Codex
-技能、MCP、Hook，不执行候选命令。每次生成使用临时 Codex 线程；RSSH 原有聊天记录机制不变，
-临时线程不代表云端零留存。登录凭据仅由 Codex 保存在进程内存中，重启运行时后需重新登录，使用独立目录
-`<RSSH 数据目录>/codex-subscription`，不复制你现有的 Codex 登录文件。
-程序路径与思考偏好只在本机保存，不进入配置同步。切换已有 HTTP Provider 到 Codex 时，
-保留但不使用、不导出其原有加密 API Key；明确删除 Provider 时才清除该凭据。不启动公开代理服务；首版一次只运行一个
-生成请求，RSSH 不重放失败的 turn，也不自动切换 API 计费；Codex 自身的有界传输重试仍由官方运行时处理。
-
-桌面是主要目标；Headless／JetBrains 在可信单用户部署中复用相同后端。
-移动端不运行本地订阅 Provider，已有 HTTP Provider 不受影响。本阶段不新增 CLI 登录／聊天命令。
-
-离线验收命令（不登录、不调用真实模型）：
-
-```powershell
-python scripts/check-codex-subscription.py --codex "C:\Codex程序的绝对路径\codex.exe"
-```
-
 ### 本机 Agent 一次注册
 
 在「设置 → 外部终端接入（MCP）」复制不含令牌的本机配置，将 `rssh mcp-proxy`
@@ -146,14 +115,22 @@ LOCAL predictor 与 Prompt/Context 测试位于
 </td>
 <td width="50%" valign="top">
 
+### MCP 连接本地 AI Agent
+让 Codex、Claude Code 通过 MCP 复用 RSSH 已连接的终端，结合本地代码排障。命令审核和执行记录保留在 RSSH。
+
+<img src="https://rssh.ofcoder.com/welcome-mcp.gif" alt="MCP：Codex 结合本地代码与已有 RSSH 会话排查登录失败" width="400">
+
+</td>
+</tr>
+<tr>
+<td width="50%" valign="top">
+
 ### 🎨 彩色命令块
 每条命令和它的输出自动成块、左侧按色分隔，一眼找到上一条命令的输出在哪儿。**纯本地渲染**，零远端依赖。
 
 <img src="https://rssh.ofcoder.com/welcome-blocks.gif" alt="彩色命令块" width="400">
 
 </td>
-</tr>
-<tr>
 <td width="50%" valign="top">
 
 ### 🐳 动态发现
@@ -162,12 +139,22 @@ LOCAL predictor 与 Prompt/Context 测试位于
 <img src="https://rssh.ofcoder.com/welcome-discovery.gif" alt="动态发现：容器实时出现在 Home" width="400">
 
 </td>
+</tr>
+<tr>
 <td width="50%" valign="top">
 
 ### 🔐 多平台数据同步
 密钥保存在你本地的 keyserver 程序中，连接配置加密后保存在你的 GitHub 私有仓库里面，不需要保存在第三方服务器。
 
 <img src="https://rssh.ofcoder.com/welcome-sync.gif" alt="安全与同步：密钥进钥匙串，配置加密到 GitHub" width="400">
+
+</td>
+<td width="50%" valign="top">
+
+### 终端插件
+在侧栏或状态条中加入监控、自定义工具或终端宠物。安装现有插件，也可以用 HTML 和 JavaScript 开发自己的插件。
+
+<img src="https://rssh.ofcoder.com/welcome-plugins.gif" alt="终端插件：监控面板、状态条和终端宠物" width="400">
 
 </td>
 </tr>
@@ -190,7 +177,7 @@ LOCAL predictor 与 Prompt/Context 测试位于
 - **连接与凭据** —— SQLite 存储，可从 `~/.ssh/config` 导入
 - **安全与同步** —— Secret 使用 ChaCha20-Poly1305 本地加密，系统可用时由钥匙串保管主密钥；可选择远程同步范围，并加密备份到你自己的 GitHub 仓库或 WebDAV 服务器
 - **片段** —— 可复用命令快捷键（Cmd+E）
-- **响应式布局** —— 窄窗口显示辅助键盘栏（Ctrl/Alt/方向键/Tab/Esc）和紧凑导航；所有平台都按窗口宽度调整布局
+- **响应式布局** —— 导航按窗口宽度调整；Android、iOS、鸿蒙手机和平板在任何宽度下都显示辅助键盘栏（Ctrl/Alt/方向键/Tab/Esc）
 - **IDE 插件** —— 在 JetBrains IDE 的工具窗口里运行 RSSH（共享数据目录）
 
 本地终端、串口控制、SSH Agent 和 Docker/Kubernetes 动态发现，按宿主实际提供的系统接口、权限和工具开放。
@@ -215,8 +202,6 @@ macOS、Windows、Linux 和 Android 安装包从 [Releases](https://github.com/r
 | 鸿蒙手机             | [华为应用市场](https://appgallery.huawei.com/app/detail?id=com.rssh.app&channelId=SHARE&source=appshare) | 在手机上搜索 **RSSH**     |
 | 鸿蒙电脑             | [华为应用市场](https://appgallery.huawei.com/app/detail?id=com.rssh.app&channelId=SHARE&source=appshare) | 在电脑上搜索 **RSSH**     |
 
-鸿蒙手机端和电脑端要求 HarmonyOS 5 及以上，使用独立安装包，由应用市场按设备分发。直接在对应设备的应用市场安装和更新即可。
-
 ### IntelliJ / JetBrains 插件
 
 在 JetBrains IDE 的工具窗口里运行完整 RSSH —— 与桌面版共享同一套主机、密钥、设置
@@ -234,7 +219,7 @@ macOS、Windows、Linux 和 Android 安装包从 [Releases](https://github.com/r
 
 ## 开发
 
-参见 [CONTRIBUTING.md](CONTRIBUTING.md)。鸿蒙构建与签名说明见 [BUILD_OHOS.md](BUILD_OHOS.md)。
+参见 [CONTRIBUTING.md](CONTRIBUTING.md)。
 
 ## 协议
 

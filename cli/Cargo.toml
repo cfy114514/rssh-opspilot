@@ -1,0 +1,22 @@
+[package]
+name = "rssh-cli"
+version = "0.0.1"
+edition = "2021"
+
+[dependencies]
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls-native-roots", "stream"] }
+rssh-core = { workspace = true }
+clap = { version = "4", features = ["derive"] }
+clap_complete = { version = "4", features = ["unstable-dynamic"] }
+log = { workspace = true }
+rpassword = "7"
+rusqlite = { workspace = true, features = ["bundled"] }
+serde_json = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+url = { workspace = true }
+tempfile = { workspace = true }
+tokio = { workspace = true, features = ["rt", "net", "time"] }
+uuid = { workspace = true, features = ["v4"] }
+
+[dev-dependencies]
+axum = { version = "0.8", default-features = false, features = ["http1","tokio"] }

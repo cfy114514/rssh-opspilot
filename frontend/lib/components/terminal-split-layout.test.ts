@@ -1,0 +1,43 @@
+import {readFileSync} from "node:fs";
+import {join} from "node:path";
+import {describe, expect, it} from "vitest";
+
+const source = readFileSync(
+  join(process.cwd(), "frontend/lib/components/TerminalSplitLayout.svelte"),
+  "utf8",
+);
+const terminalPaneSource = readFileSync(
+  join(process.cwd(), "frontend/lib/components/TerminalPane.svelte"),
+  "utf8",
+);
+
+describe("TerminalSplitLayout", () => {
+  it("localizes pane controls", () => {
+    expect(source).toContain('import {t} from "../i18n/index.svelte.ts"');
+    expect(source).toContain('aria-label={t("terminal.pane.activate", {label: app.tabLabel(tab)})}');
+    expect(source).toContain('title={t("terminal.pane.close")}');
+    expect(source).toContain('aria-label={t("terminal.pane.resize")}');
+  });
+
+  it("renders the only pane close button inside the child-pane guard", () => {
+    const childPaneGuard = source.match(/\{#if tab\.paneOf\}([\s\S]*?)\{\/if\}/)?.[1] ?? "";
+
+    expect(childPaneGuard).toContain('class="close-button"');
+    expect(source.match(/class="close-button"/g)).toHaveLength(1);
+  });
+
+  it("renders connecting, connected, and disconnected as explicit states", () => {
+    expect(source).toContain('{@const connectionStatus = app.terminalConnectionStatus(tab.id)}');
+    expect(source).toContain('connectionStatus === "connecting"');
+    expect(source).toContain('"common.connecting"');
+    expect(source).not.toContain('app.sessionIdForTab(tab.id) ? "common.connected" : "common.disconnected"');
+    expect(terminalPaneSource).toContain("app.setTerminalConnectionStatus(tabId, connectionStatus)");
+  });
+
+  it("only renders pane headers when multiple panes are visible", () => {
+    expect(source).toMatch(
+      /\{#if paneLeaves\.length > 1\}\s*\{@const connectionStatus = app\.terminalConnectionStatus\(tab\.id\)\}\s*<header class="pane-header">/,
+    );
+  });
+
+});

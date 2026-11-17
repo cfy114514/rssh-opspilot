@@ -1,0 +1,31 @@
+//! Shared RSSH business logic, storage, and connection engine.
+
+pub mod agent;
+#[cfg(any(windows, macos, linux))]
+pub mod automation;
+#[cfg(any(windows, macos, linux))]
+pub mod automation_discovery;
+#[cfg(any(windows, macos, linux))]
+#[doc(hidden)]
+pub use automation::terminal_mcp_tools;
+pub mod ai;
+pub mod commands;
+pub mod crypto;
+pub mod db;
+pub mod emitter;
+pub mod error;
+pub mod files;
+pub mod mcp_control;
+pub mod migration;
+pub mod models;
+pub mod redaction;
+pub mod resource;
+pub mod secret;
+pub mod ssh;
+pub mod state;
+pub mod sync;
+pub mod telnet_profile;
+pub mod terminal;
+
+pub use ssh::bastion;
+pub const CLI_VERSION: &str = "1.1.0";

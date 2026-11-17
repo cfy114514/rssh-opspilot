@@ -61,7 +61,7 @@ The fork adds a safe, local-first suggestion loop to the existing terminal:
    target, host, and working directory so later sessions can improve ranking.
 7. Optional command observations are redacted locally and are off by default.
    Terminal output is never stored in OpsPilot memory.
-8. `Ask AI` and `Summarize` pass redacted blocks to RSSH's existing AI panel.
+8. `Ask AI` prefills the AI panel for review; `Copy extraction material` copies only redacted blocks.
 
 The default path is zero-install on the remote server: no agent, shell hook,
 daemon, extra port, hidden `pwd`, or hidden `ls` command is required. Alternate
@@ -102,8 +102,8 @@ rssh opspilot-memory clear --yes
 - AI handoff reuses RSSH command-block redaction and fails closed if the policy
   cannot be loaded.
 - Session extraction uses the `rssh-offline-context` v1 JSON contract for human
-  review. “Extract with AI” only prefills the AI panel; “Copy extraction material”
-  works without an AI key. Both use redacted recent visible blocks, not full history.
+  review. “Copy extraction material” works without an AI key and uses only
+  redacted recent visible blocks. It never submits a request to the AI provider.
 - In Settings → Shell → OpsPilot, select a JSON file or paste JSON, review commands,
   hosts, triggers and replacements, acknowledge review, then confirm import.
   Cancelling does not import anything. A `read-only` label is not proof of safety;
@@ -114,44 +114,6 @@ rssh opspilot-memory clear --yes
 - The current fork reuses RSSH's existing transport. Native `ssh.exe` +
   ConPTY integration that preserves every OpenSSH `ProxyJump`, Agent, and MFA
   behavior is planned as the next transport milestone.
-
-### ChatGPT / Codex subscription provider
-
-The optional `Codex Subscription` provider uses the official local `codex app-server`
-with ChatGPT-managed login, not a proxy or an OpenAI API key. Install the validated
-**Codex CLI 0.153.2** separately; RSSH does not download or update it automatically.
-Other versions fail closed until the no-tools wire check has been repeated.
-
-1. In Settings → AI Provider, choose **Codex Subscription**.
-2. Leave the executable field blank for auto-detection, or configure an absolute path.
-3. Click **Log in**, copy the official device code, and complete the device-code login in your browser.
-4. Refresh the model list. Luna is preselected only when the account's catalog contains
-   it; reasoning defaults to `none` only if supported. Missing models/efforts require
-   an explicit new selection, never an automatic switch to a larger model.
-5. Save and select the provider, then start a new AI conversation (existing conversations
-   retain their provider). AI requests still require an explicit Send action.
-   Extraction responses can be sent to the existing offline-context review before import.
-
-This provider is text-only: it does not receive RSSH command tools, run shell probes,
-load personal Codex skills/MCP/hooks, or execute suggested commands. Each generation
-uses an ephemeral Codex thread. The existing RSSH chat history behavior is unchanged;
-ephemeral does not promise zero server-side retention. Codex keeps login credentials in process memory only (sign in again after runtime restart),
-using an RSSH-specific home (`<RSSH data dir>/codex-subscription`); RSSH never
-copies your existing Codex login files. The executable choice and reasoning preferences
-are local-only. Switching an existing HTTP provider to Codex preserves its inactive
-encrypted API key without using or exporting it; deleting the provider clears it. No public proxy listener is started. One generation runs at a time;
-RSSH does not replay failed turns or fall back to API billing. Codex's own bounded
-transport retry behavior remains part of its official runtime.
-
-Desktop is the primary target. Headless/JetBrains reuse the same backend in trusted
-single-user deployments. Mobile cannot run this local provider; existing HTTP providers
-remain available. No new CLI login/chat commands are added.
-
-Offline acceptance check (no account or real inference):
-
-```powershell
-python scripts/check-codex-subscription.py --codex "C:\absolute\path\to\codex.exe"
-```
 
 ### Development quick start
 
@@ -182,14 +144,22 @@ Not another chat box. Nothing to install on your servers — it works like a hum
 </td>
 <td width="50%" valign="top">
 
+### MCP for your local agent
+Let Codex or Claude Code use already connected RSSH terminals over MCP, alongside your local code. Review commands and execution history in RSSH.
+
+<img src="https://rssh.ofcoder.com/welcome-mcp.gif" alt="MCP: Codex investigates a login failure using local code and an existing RSSH session" width="400">
+
+</td>
+</tr>
+<tr>
+<td width="50%" valign="top">
+
 ### 🎨 Color-coded command blocks
 Every command and its output become a block with a color-coded left edge — spot the last command's output at a glance. **Rendered fully locally**, zero remote dependency.
 
 <img src="https://rssh.ofcoder.com/welcome-blocks.gif" alt="Color-coded command blocks" width="400">
 
 </td>
-</tr>
-<tr>
 <td width="50%" valign="top">
 
 ### 🐳 Dynamic discovery
@@ -198,12 +168,22 @@ Containers and pods change by the minute — connecting to servers by static IP 
 <img src="https://rssh.ofcoder.com/welcome-discovery.gif" alt="Dynamic discovery: containers appear live in Home" width="400">
 
 </td>
+</tr>
+<tr>
 <td width="50%" valign="top">
 
 ### 🔐 Multi-platform data sync
 Keys stay in your local OS keyserver; connection configs are encrypted into your own private GitHub repo — nothing sits on a third-party server.
 
 <img src="https://rssh.ofcoder.com/welcome-sync.gif" alt="Security and sync: keys in keychain, profiles encrypted to GitHub" width="400">
+
+</td>
+<td width="50%" valign="top">
+
+### Terminal plugins
+Add monitoring, custom tools or a terminal pet in a side panel or status strip. Install plugins or build your own with HTML and JavaScript.
+
+<img src="https://rssh.ofcoder.com/welcome-plugins.gif" alt="Terminal plugins: a monitoring panel, status strip and terminal pet" width="400">
 
 </td>
 </tr>
@@ -226,7 +206,7 @@ Keys stay in your local OS keyserver; connection configs are encrypted into your
 - **Connections & Credentials** -- SQLite storage, import from `~/.ssh/config`
 - **Security & Sync** -- secrets encrypted locally with ChaCha20-Poly1305, master key in the platform keychain when available, selective remote sync, encrypted backup to your own GitHub repo or WebDAV server
 - **Snippets** -- reusable command shortcuts (Cmd+E)
-- **Responsive Layout** -- narrow windows show a virtual keybar (Ctrl/Alt/arrows/Tab/Esc) and compact navigation; the layout follows window width on every platform
+- **Responsive Layout** -- navigation follows window width; Android, iOS and HarmonyOS phones/tablets show a virtual keybar (Ctrl/Alt/arrows/Tab/Esc) at every width
 - **IDE Plugin** -- run RSSH inside JetBrains IDEs in a tool window (shared data dir)
 
 Local shells, serial controls, SSH agents and Docker/Kubernetes discovery depend on the host's available APIs, permissions and tools.
@@ -250,8 +230,6 @@ Download macOS, Windows, Linux and Android installers from [Releases](https://gi
 | iOS                 |                                          | AppStore, by [@paradoxie](https://github.com/paradoxie) |
 | HarmonyOS phone     | [Huawei AppGallery](https://appgallery.huawei.com/app/detail?id=com.rssh.app&channelId=SHARE&source=appshare) | Search **RSSH** on your phone |
 | HarmonyOS PC        | [Huawei AppGallery](https://appgallery.huawei.com/app/detail?id=com.rssh.app&channelId=SHARE&source=appshare) | Search **RSSH** on your PC    |
-
-The HarmonyOS phone and PC editions require HarmonyOS 5 or later and have separate installation packages. AppGallery delivers the package for your device; install and update directly from the store.
 
 ### IntelliJ / JetBrains plugin
 

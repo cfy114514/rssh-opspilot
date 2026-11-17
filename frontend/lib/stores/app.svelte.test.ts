@@ -1,0 +1,1323 @@
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+// Settings persist through the Tauri backend (invoke). Unit tests have no
+// backend, so stub it to assert store behavior and command arguments.
+const invokeMock = vi.hoisted(() => vi.fn(async (_command: string, _args?: Record<string, unknown>) => null as unknown));
+vi.mock("@tauri-apps/api/core", () => ({ invoke: invokeMock }));
+
+// The store transitively imports the AI store, which reads localStorage at
+// module load (loadPos). Node has no localStorage, so give the import an
+// in-memory stub. Fresh per test to avoid cross-test leakage.
+//
+// Some imported platform helpers read navigator at module load. The MRU tests
+// do not exercise platform behavior, so a neutral value is sufficient.
+beforeEach(() => {
+  invokeMock.mockReset();
+  invokeMock.mockResolvedValue(null);
+  const store = new Map<string, string>();
+  vi.stubGlobal("localStorage", {
+    getItem: (k: string) => store.get(k) ?? null,
+    setItem: (k: string, v: string) => void store.set(k, v),
+    removeItem: (k: string) => void store.delete(k),
+    clear: () => store.clear(),
+  });
+  vi.stubGlobal("navigator", { userAgent: "node" });
+});
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
+
+// Module-level $state — reset + re-import for a clean tab list per test
+// (mirrors toast.test.ts).
+async function loadAppModule() {
+  vi.resetModules();
+  return import("./app.svelte.ts");
+}
+
+const local = (id: string) => ({ id, type: "local" as const, label: id });
+
+describe("startup list requests", () => {
+  it.each(["loadProfiles", "loadForwards", "loadGroups"] as const)("shares only overlapping startup %s reads", async (name) => {
+    const app = await loadAppModule();
+    let resolve!: (value: []) => void;
+    invokeMock.mockImplementation(() => new Promise((done) => { resolve = done; }));
+    const first = app[name](true);
+    const second = app[name](true);
+    expect(invokeMock).toHaveBeenCalledTimes(1);
+    resolve([]);
+    await Promise.all([first, second]);
+    invokeMock.mockResolvedValue([]);
+    await app[name](true);
+    expect(invokeMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("refresh reads bypass pending startup data and older completion cannot clear a new request", async () => {
+    const app = await loadAppModule();
+    const pending: ((value: unknown) => void)[] = [];
+    invokeMock.mockImplementation(() => new Promise((done) => { pending.push(done); }));
+    const old = app.loadProfiles(true);
+    const fresh = app.loadProfiles();
+    const newer = app.loadProfiles(true);
+    expect(invokeMock).toHaveBeenCalledTimes(2);
+    pending[0]([{ id: "old" }]);
+    await old;
+    const joined = app.loadProfiles(true);
+    expect(invokeMock).toHaveBeenCalledTimes(2);
+    pending[1]([{ id: "fresh" }]);
+    await expect(fresh).resolves.toEqual([{ id: "fresh" }]);
+    await expect(newer).resolves.toEqual([{ id: "fresh" }]);
+    await expect(joined).resolves.toEqual([{ id: "fresh" }]);
+  });
+
+  it("retries a failed startup read", async () => {
+    const app = await loadAppModule();
+    invokeMock.mockRejectedValueOnce(new Error("offline"));
+    await expect(app.loadGroups(true)).rejects.toThrow("offline");
+    invokeMock.mockResolvedValue([]);
+    await expect(app.loadGroups(true)).resolves.toEqual([]);
+    expect(invokeMock).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("OpsPilot command history setting", () => {
+  it.each([null, "false", "invalid"])("defaults safely from %j", async (stored) => {
+    invokeMock.mockImplementation(async (command: string) =>
+      command === "get_setting" ? stored : null);
+    const app = await loadAppModule();
+    await expect(app.loadOpsPilotCommandHistoryEnabled()).resolves.toBe(false);
+    expect(app.opsPilotCommandHistoryEnabled()).toBe(false);
+  });
+
+  it("loads only an explicit persisted true value", async () => {
+    invokeMock.mockResolvedValue("true");
+    const app = await loadAppModule();
+    await expect(app.loadOpsPilotCommandHistoryEnabled()).resolves.toBe(true);
+  });
+
+  it("persists the exact setting key and string value", async () => {
+    const app = await loadAppModule();
+    await app.setOpsPilotCommandHistoryEnabled(true);
+    expect(invokeMock).toHaveBeenCalledWith("set_setting", {
+      key: "opspilot_command_history_enabled",
+      value: "true",
+    });
+  });
+
+  it("rolls back the visible value when persistence fails", async () => {
+    const app = await loadAppModule();
+    invokeMock.mockImplementation((command: string) => command === "get_setting"
+      ? Promise.resolve("false")
+      : Promise.reject(new Error("database busy")));
+    await expect(app.setOpsPilotCommandHistoryEnabled(true)).rejects.toThrow("database busy");
+    expect(app.opsPilotCommandHistoryEnabled()).toBe(false);
+  });
+
+  it("rolls consecutive failed writes back to the last persisted value", async () => {
+    const app = await loadAppModule();
+    invokeMock.mockRejectedValue(new Error("database busy"));
+
+    const enable = app.setOpsPilotCommandHistoryEnabled(true);
+    const disable = app.setOpsPilotCommandHistoryEnabled(false);
+    await expect(enable).rejects.toThrow("database busy");
+    await expect(disable).rejects.toThrow("database busy");
+
+    expect(app.opsPilotCommandHistoryEnabled()).toBe(false);
+  });
+
+  it("waits for the persisted baseline before rolling back a failed first write", async () => {
+    let resolveLoad!: (value: string | null) => void;
+    invokeMock.mockImplementation((command: string) => {
+      if (command === "get_setting") {
+        return new Promise((resolve) => { resolveLoad = resolve; });
+      }
+      return Promise.reject(new Error("database busy"));
+    });
+    const app = await loadAppModule();
+
+    const load = app.loadOpsPilotCommandHistoryEnabled();
+    const disable = app.setOpsPilotCommandHistoryEnabled(false);
+    const rejected = expect(disable).rejects.toThrow("database busy");
+    resolveLoad("true");
+    await load;
+    await rejected;
+
+    expect(app.opsPilotCommandHistoryEnabled()).toBe(true);
+  });
+
+  it("serializes rapid opposite writes so the last choice wins persistently", async () => {
+    const releases: Array<() => void> = [];
+    invokeMock.mockImplementation((command: string) => command === "get_setting"
+      ? Promise.resolve("false")
+      : new Promise<void>((resolve) => releases.push(resolve)));
+    const app = await loadAppModule();
+
+    const enable = app.setOpsPilotCommandHistoryEnabled(true);
+    const disable = app.setOpsPilotCommandHistoryEnabled(false);
+    await vi.waitFor(() => expect(releases).toHaveLength(1));
+    expect(app.opsPilotCommandHistoryEnabled()).toBe(false);
+    releases[0]();
+    await vi.waitFor(() => expect(releases).toHaveLength(2));
+    releases[1]();
+    await Promise.all([enable, disable]);
+
+    expect(invokeMock.mock.calls.filter(([command]) => command === "set_setting")).toEqual([
+      ["set_setting", { key: "opspilot_command_history_enabled", value: "true" }],
+      ["set_setting", { key: "opspilot_command_history_enabled", value: "false" }],
+    ]);
+    expect(app.opsPilotCommandHistoryEnabled()).toBe(false);
+  });
+
+  it("queues an explicit choice after the initial persisted load", async () => {
+    let resolveLoad!: (value: string | null) => void;
+    invokeMock
+      .mockImplementationOnce(() => new Promise((resolve) => { resolveLoad = resolve; }))
+      .mockResolvedValueOnce(null);
+    const app = await loadAppModule();
+
+    const load = app.loadOpsPilotCommandHistoryEnabled();
+    const enable = app.setOpsPilotCommandHistoryEnabled(true);
+    resolveLoad("false");
+    await load;
+    await enable;
+
+    expect(app.opsPilotCommandHistoryEnabled()).toBe(true);
+  });
+});
+
+describe("sidebar layout preferences", () => {
+  it.each([
+    "Mozilla/5.0 (Phone; OpenHarmony 5.0)",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15)",
+  ])("selects by width and preserves both preferences while resizing: %s", async (userAgent) => {
+    vi.stubGlobal("navigator", { userAgent });
+    const viewport = Object.assign(new EventTarget(), { innerWidth: 900 });
+    vi.stubGlobal("window", viewport);
+    localStorage.setItem("sidebar.position.desktop", "left");
+    localStorage.setItem("sidebar.position.mobile", "right");
+    const app = await loadAppModule();
+    const layout = await import("./layout.svelte.ts");
+    const stop = layout.observeViewport();
+    const write = vi.spyOn(localStorage, "setItem");
+    invokeMock.mockClear();
+
+    expect(app.sidebarPosition()).toBe("left");
+    viewport.innerWidth = 400;
+    viewport.dispatchEvent(new Event("resize"));
+    expect(app.sidebarPosition()).toBe("right");
+    expect(write).not.toHaveBeenCalled();
+    expect(invokeMock).not.toHaveBeenCalled();
+
+    app.setSidebarPosition("top");
+    expect(localStorage.getItem("sidebar.position.mobile")).toBe("top");
+    expect(localStorage.getItem("sidebar.position.desktop")).toBe("left");
+    write.mockClear();
+
+    viewport.innerWidth = 900;
+    viewport.dispatchEvent(new Event("resize"));
+    expect(app.sidebarPosition()).toBe("left");
+    expect(write).not.toHaveBeenCalled();
+    expect(invokeMock).not.toHaveBeenCalled();
+    stop();
+    write.mockRestore();
+  });
+});
+
+describe("recent Home connections", () => {
+  it("opens AWS SSM targets as ephemeral PTY terminals with recent-history and AI support", async () => {
+    const app = await loadAppModule();
+    const spec = { type: "aws_ssm" as const, profile: "production", region: "us-east-1", instance_id: "i-0123456789abcdef0", account_id: "123456789012" };
+    app.connectDynamicTarget({
+      id: "aws_ssm:123456789012:us-east-1:i-0123456789abcdef0", source_id: "aws-source",
+      source_name: "AWS SSM", platform: "aws_ssm", name: "Production EC2", sub: "us-east-1", connector_spec: spec,
+    });
+
+    const tab = app.activeTab()!;
+    expect(tab.type).toBe("aws_ssm");
+    expect(tab.id).toMatch(/^aws_ssm:/);
+    expect(JSON.parse(tab.meta!.connectorSpec)).toEqual(spec);
+    expect(app.isTerminalTabType(tab.type)).toBe(true);
+    expect(app.isAiCapableTabType(tab.type)).toBe(true);
+    expect(app.aiTargetKind("aws_ssm")).toBe("local");
+    expect(app.recentHomeItemIds()).toEqual(["dynamic:aws-source:aws_ssm:123456789012:us-east-1:i-0123456789abcdef0"]);
+    expect(invokeMock).not.toHaveBeenCalled();
+  });
+
+  it("records every saved or discovered GUI connection through addTab", async () => {
+    const app = await loadAppModule();
+
+    app.addTab({ id: "ssh-tab", type: "ssh", label: "SSH", meta: { profileId: "p1" } });
+    app.addTab({ id: "fwd-tab", type: "forward", label: "Forward", meta: { forwardId: "f1" } });
+    app.addTab({ id: "serial-tab", type: "serial", label: "Serial", meta: { serialProfileId: "s1" } });
+    app.addTab({ id: "telnet-tab", type: "telnet", label: "Telnet", meta: { profileId: "t1" } });
+    app.addTab({
+      id: "docker-tab",
+      type: "docker_exec",
+      label: "Docker",
+      meta: { sourceId: "src", dynamicTargetId: "docker_exec:ctx:container" },
+    });
+    app.addTab({
+      id: "k8s-tab",
+      type: "kubectl_exec",
+      label: "Kubernetes",
+      meta: { sourceId: "src", dynamicTargetId: "kubectl_exec:ctx:ns:pod:container" },
+    });
+
+    expect(app.recentHomeItemIds()).toEqual([
+      "dynamic:src:kubectl_exec:ctx:ns:pod:container",
+      "dynamic:src:docker_exec:ctx:container",
+      "telnet:t1",
+      "serial:s1",
+      "forward:f1",
+      "ssh:p1",
+    ]);
+  });
+
+  it("moves repeated connections to the front and ignores non-Home tabs", async () => {
+    const app = await loadAppModule();
+
+    app.addTab({ id: "ssh-a", type: "ssh", label: "A", meta: { profileId: "a" } });
+    app.addTab({ id: "ssh-b", type: "ssh", label: "B", meta: { profileId: "b" } });
+    app.addTab(local("local"));
+    app.addTab({ id: "edit", type: "edit", label: "Edit" });
+    app.addTab({ id: "ssh-a-2", type: "ssh", label: "A", meta: { profileId: "a" } });
+
+    expect(app.recentHomeItemIds()).toEqual(["ssh:a", "ssh:b"]);
+    expect(JSON.parse(localStorage.getItem("home.recent_items.v1") ?? "[]")).toEqual([
+      "ssh:a",
+      "ssh:b",
+    ]);
+  });
+
+  it("loads valid persisted ids and falls back safely from corrupt storage", async () => {
+    localStorage.setItem("home.recent_items.v1", JSON.stringify(["ssh:p2", "ssh:p1", "ssh:p2"]));
+    let app = await loadAppModule();
+    expect(app.recentHomeItemIds()).toEqual(["ssh:p2", "ssh:p1"]);
+
+    localStorage.setItem("home.recent_items.v1", "not-json");
+    app = await loadAppModule();
+    expect(app.recentHomeItemIds()).toEqual([]);
+  });
+
+  it("merges a newer record written by another window before persisting", async () => {
+    const app = await loadAppModule();
+    app.addTab({ id: "ssh-a", type: "ssh", label: "A", meta: { profileId: "a" } });
+
+    localStorage.setItem("home.recent_items.v1", JSON.stringify(["ssh:b", "ssh:a"]));
+    app.addTab({ id: "ssh-c", type: "ssh", label: "C", meta: { profileId: "c" } });
+
+    expect(app.recentHomeItemIds()).toEqual(["ssh:c", "ssh:b", "ssh:a"]);
+  });
+
+  it("reacts to recent records written by another window", async () => {
+    let onStorage: ((event: StorageEvent) => void) | undefined;
+    vi.stubGlobal("window", {
+      addEventListener: (type: string, listener: (event: StorageEvent) => void) => {
+        if (type === "storage") onStorage = listener;
+      },
+    });
+    const app = await loadAppModule();
+
+    onStorage?.({
+      key: "home.recent_items.v1",
+      newValue: JSON.stringify(["ssh:remote", "forward:f1"]),
+    } as StorageEvent);
+
+    expect(app.recentHomeItemIds()).toEqual(["ssh:remote", "forward:f1"]);
+  });
+
+  it("bounds transient discovery history instead of growing forever", async () => {
+    const app = await loadAppModule();
+    for (let index = 0; index < 260; index += 1) {
+      app.addTab({
+        id: `docker-tab-${index}`,
+        type: "docker_exec",
+        label: `Container ${index}`,
+        meta: { sourceId: "src", dynamicTargetId: `docker_exec:ctx:${index}` },
+      });
+    }
+
+    expect(app.recentHomeItemIds()).toHaveLength(256);
+    expect(app.recentHomeItemIds()[0]).toBe("dynamic:src:docker_exec:ctx:259");
+    expect(app.recentHomeItemIds()[255]).toBe("dynamic:src:docker_exec:ctx:4");
+  });
+});
+
+describe("tab MRU ordering", () => {
+  it("seeds with the fixed home tab at the front", async () => {
+    const app = await loadAppModule();
+    expect(app.tabs().map((t) => t.id)).toEqual(["home"]);
+    expect(app.activeTabId()).toBe("home");
+  });
+
+  it("derives the fixed Home tab label from the active locale", async () => {
+    const app = await loadAppModule();
+    const { setLocale } = await import("../i18n/index.svelte.ts");
+    const home = app.tabs()[0];
+
+    expect(app.tabLabel(home)).toBe("Home");
+    setLocale("zh");
+
+    expect(app.tabLabel(home)).toBe("首页");
+  });
+
+  it("inserts each new tab at the front of the session region (after home)", async () => {
+    const app = await loadAppModule();
+    await app.setTabMru(true);
+    app.addTab(local("a"));
+    app.addTab(local("b"));
+    app.addTab(local("c"));
+    // Newest = most-recently-focused → front. Home stays pinned at index 0.
+    expect(app.tabs().map((t) => t.id)).toEqual(["home", "c", "b", "a"]);
+    expect(app.activeTabId()).toBe("c");
+  });
+
+  it("brings the focused session tab to the front on activation", async () => {
+    const app = await loadAppModule();
+    await app.setTabMru(true);
+    app.addTab(local("a"));
+    app.addTab(local("b"));
+    app.addTab(local("c")); // [home, c, b, a]
+
+    app.setActiveTab("a");
+    expect(app.tabs().map((t) => t.id)).toEqual(["home", "a", "c", "b"]);
+    expect(app.activeTabId()).toBe("a");
+
+    app.setActiveTab("c");
+    expect(app.tabs().map((t) => t.id)).toEqual(["home", "c", "a", "b"]);
+  });
+
+  it("activating the already-front tab is a no-op", async () => {
+    const app = await loadAppModule();
+    await app.setTabMru(true);
+    app.addTab(local("a"));
+    app.addTab(local("b")); // [home, b, a]
+    app.setActiveTab("b");
+    expect(app.tabs().map((t) => t.id)).toEqual(["home", "b", "a"]);
+  });
+
+  it("never reorders the fixed home tab", async () => {
+    const app = await loadAppModule();
+    await app.setTabMru(true);
+    app.addTab(local("a"));
+    app.addTab(local("b")); // [home, b, a]
+    app.setActiveTab("home");
+    expect(app.tabs().map((t) => t.id)).toEqual(["home", "b", "a"]);
+    expect(app.activeTabId()).toBe("home");
+  });
+});
+
+describe("tab drag reorder stays independent of MRU", () => {
+  it("moveTab reorders without refocusing the dragged tab", async () => {
+    const app = await loadAppModule();
+    await app.setTabMru(true);
+    app.addTab(local("a"));
+    app.addTab(local("b"));
+    app.addTab(local("c")); // [home, c, b, a], active c
+
+    // Drag the front tab (c, idx 1) to the end (idx 3).
+    app.moveTab(1, 3);
+    expect(app.tabs().map((t) => t.id)).toEqual(["home", "b", "a", "c"]);
+    // Dragging must NOT change the active tab — MRU only fires on focus.
+    expect(app.activeTabId()).toBe("c");
+  });
+});
+
+describe("closeTab keeps the most-recent tab active", () => {
+  it("activates the next session tab after closing the active one", async () => {
+    const app = await loadAppModule();
+    await app.setTabMru(true);
+    app.addTab(local("a"));
+    app.addTab(local("b"));
+    app.addTab(local("c")); // [home, c, b, a], active c at front
+
+    app.closeTab("c");
+    // c was front (idx 1); the next most-recent (b) takes the front and focus.
+    expect(app.tabs().map((t) => t.id)).toEqual(["home", "b", "a"]);
+    expect(app.activeTabId()).toBe("b");
+  });
+
+  it("discards only the closed tab's panel visibility when no AI session was started", async () => {
+    const app = await loadAppModule();
+    const ai = await import("../ai/store.svelte.ts");
+    app.addTab(local("a"));
+    ai.openPanel("a");
+    ai.setPanelWidth("a", 480);
+    ai.prefillInput("a", "draft A");
+    app.addTab(local("b"));
+    ai.openPanel("b");
+    ai.setPanelWidth("b", 360);
+    ai.prefillInput("b", "draft B");
+
+    app.closeTab("a");
+
+    expect(ai.isOpen("a")).toBe(false);
+    expect(ai.panelWidth("a")).toBeNull();
+    expect(ai.pendingPrefill("a")).toBeNull();
+    expect(ai.isOpen("b")).toBe(true);
+    expect(ai.panelWidth("b")).toBe(360);
+    expect(ai.pendingPrefill("b")?.text).toBe("draft B");
+  });
+
+  it("reports an asynchronous AI disposal failure to the user", async () => {
+    const app = await loadAppModule();
+    const ai = await import("../ai/store.svelte.ts");
+    const { toasts } = await import("./toast.svelte.ts");
+    vi.spyOn(ai, "disposeTab").mockRejectedValueOnce(
+      new Error("final timeline write failed"),
+    );
+    app.addTab(local("a"));
+
+    app.closeTab("a");
+    await vi.waitFor(() => {
+      expect(toasts()).toContainEqual(expect.objectContaining({
+        kind: "error",
+        message: "final timeline write failed",
+      }));
+    });
+  });
+});
+
+describe("SFTP panel state", () => {
+  it("seeds a new SSH tab from the persisted panel width", async () => {
+    localStorage.setItem("sftp-panel-width", "460");
+    const app = await loadAppModule();
+
+    app.addTab({ id: "a", type: "ssh", label: "A" });
+
+    expect(app.sftpPanelWidthForTab("a")).toBe(460);
+  });
+
+  it("keeps seeded widths independent and persists the latest width for future tabs", async () => {
+    localStorage.setItem("sftp-panel-width", "460");
+    const app = await loadAppModule();
+    app.addTab({ id: "a", type: "ssh", label: "A" });
+    app.addTab({ id: "b", type: "ssh", label: "B" });
+
+    app.setSftpPanelWidth("a", 520);
+    app.commitSftpPanelWidth("a");
+    app.addTab({ id: "c", type: "ssh", label: "C" });
+
+    expect(app.sftpPanelWidthForTab("a")).toBe(520);
+    expect(app.sftpPanelWidthForTab("b")).toBe(460);
+    expect(app.sftpPanelWidthForTab("c")).toBe(520);
+    expect(localStorage.getItem("sftp-panel-width")).toBe("520");
+
+    const reloaded = await loadAppModule();
+    reloaded.addTab({ id: "d", type: "ssh", label: "D" });
+    expect(reloaded.sftpPanelWidthForTab("d")).toBe(520);
+  });
+
+  it("resets the persisted default without changing already-seeded tabs", async () => {
+    localStorage.setItem("sftp-panel-width", "460");
+    const app = await loadAppModule();
+    app.addTab({ id: "a", type: "ssh", label: "A" });
+    app.addTab({ id: "b", type: "ssh", label: "B" });
+
+    app.setSftpPanelWidth("a", null);
+    app.commitSftpPanelWidth("a");
+    app.addTab({ id: "c", type: "ssh", label: "C" });
+
+    expect(app.sftpPanelWidthForTab("a")).toBeNull();
+    expect(app.sftpPanelWidthForTab("b")).toBe(460);
+    expect(app.sftpPanelWidthForTab("c")).toBeNull();
+    expect(localStorage.getItem("sftp-panel-width")).toBeNull();
+  });
+
+  it("ignores a delayed drag commit after its tab has closed", async () => {
+    localStorage.setItem("sftp-panel-width", "460");
+    const app = await loadAppModule();
+    app.addTab({ id: "a", type: "ssh", label: "A" });
+    app.setSftpPanelWidth("a", 520);
+
+    app.closeTab("a");
+    app.commitSftpPanelWidth("a");
+    app.addTab({ id: "b", type: "ssh", label: "B" });
+
+    expect(app.sftpPanelWidthForTab("b")).toBe(460);
+    expect(localStorage.getItem("sftp-panel-width")).toBe("460");
+  });
+
+  it("keeps widths per tab until that tab closes", async () => {
+    const app = await loadAppModule();
+    app.addTab({ id: "a", type: "ssh", label: "A" });
+    app.openSftp();
+    app.setSftpPanelWidth("a", 520);
+    app.addTab({ id: "b", type: "ssh", label: "B" });
+    app.openSftp();
+    app.setSftpPanelWidth("b", 360);
+
+    app.setActiveTab("a");
+    app.closeSftp();
+    expect(app.sftpOpenForTab("a")).toBe(false);
+    expect(app.sftpOpenForTab("b")).toBe(true);
+    expect(app.sftpPanelWidthForTab("a")).toBe(520);
+    expect(app.sftpPanelWidthForTab("b")).toBe(360);
+
+    app.setSftpPanelWidth("a", null);
+    expect(app.sftpPanelWidthForTab("a")).toBeNull();
+    expect(app.sftpPanelWidthForTab("b")).toBe(360);
+
+    app.setSftpPanelWidth("a", 480);
+    app.closeTab("a");
+    expect(app.sftpOpenForTab("a")).toBe(false);
+    expect(app.sftpOpenForTab("b")).toBe(true);
+    expect(app.sftpPanelWidthForTab("a")).toBeNull();
+    expect(app.sftpPanelWidthForTab("b")).toBe(360);
+  });
+});
+
+describe("compact AI and SFTP panels", () => {
+  beforeEach(() => {
+    vi.stubGlobal("window", Object.assign(new EventTarget(), { innerWidth: 400 }));
+  });
+
+  it("opening AI closes only the target tab's SFTP panel", async () => {
+    const app = await loadAppModule();
+    const ai = await import("../ai/store.svelte.ts");
+    app.addTab({ id: "a", type: "ssh", label: "A" });
+    app.openSftp();
+    app.addTab({ id: "b", type: "ssh", label: "B" });
+    app.openSftp();
+
+    app.openAiPanel("a");
+
+    expect(ai.isOpen("a")).toBe(true);
+    expect(app.sftpOpenForTab("a")).toBe(false);
+    expect(app.sftpOpenForTab("b")).toBe(true);
+    expect(app.activeTabId()).toBe("b");
+  });
+
+  it("opening SFTP ends only the current tab's AI conversation", async () => {
+    const app = await loadAppModule();
+    const ai = await import("../ai/store.svelte.ts");
+    app.addTab({ id: "a", type: "ssh", label: "A" });
+    app.openAiPanel("a");
+    ai.prefillInput("a", "draft A");
+    app.addTab({ id: "b", type: "ssh", label: "B" });
+    app.openAiPanel("b");
+    ai.prefillInput("b", "draft B");
+
+    app.openSftp();
+
+    expect(app.sftpOpenForTab("b")).toBe(true);
+    expect(ai.isOpen("b")).toBe(false);
+    expect(ai.pendingPrefill("b")).toBeNull();
+    expect(ai.isOpen("a")).toBe(true);
+    expect(ai.pendingPrefill("a")?.text).toBe("draft A");
+  });
+
+  it("the AI toggle uses the same exclusive open and existing close behavior", async () => {
+    const app = await loadAppModule();
+    const ai = await import("../ai/store.svelte.ts");
+    app.addTab({ id: "a", type: "ssh", label: "A" });
+    app.openSftp();
+
+    await app.toggleAiPanel("a");
+    expect(ai.isOpen("a")).toBe(true);
+    expect(app.sftpOpenForTab("a")).toBe(false);
+
+    ai.prefillInput("a", "draft");
+    await app.toggleAiPanel("a");
+    expect(ai.isOpen("a")).toBe(false);
+    expect(ai.pendingPrefill("a")).toBeNull();
+  });
+
+  it("allows both panels from either opening order at the wide breakpoint", async () => {
+    window.innerWidth = 640;
+    const app = await loadAppModule();
+    const ai = await import("../ai/store.svelte.ts");
+    app.addTab({ id: "a", type: "ssh", label: "A" });
+    app.openSftp();
+    app.openAiPanel("a");
+    app.addTab({ id: "b", type: "ssh", label: "B" });
+    app.openAiPanel("b");
+    app.openSftp();
+    app.reconcileCompactPanels();
+
+    for (const tabId of ["a", "b"]) {
+      expect(ai.isOpen(tabId)).toBe(true);
+      expect(app.sftpOpenForTab(tabId)).toBe(true);
+    }
+  });
+
+  it("keeps AI on narrowing without changing preferences or reopening SFTP on widening", async () => {
+    window.innerWidth = 900;
+    const app = await loadAppModule();
+    const ai = await import("../ai/store.svelte.ts");
+    const layout = await import("./layout.svelte.ts");
+    const stop = layout.observeViewport();
+    app.addTab({ id: "a", type: "ssh", label: "A" });
+    app.openSftp();
+    app.openAiPanel("a");
+    app.setSftpPanelWidth("a", 460);
+    ai.setPanelWidth("a", 420);
+    ai.setPosition("left");
+    app.addTab({ id: "b", type: "ssh", label: "B" });
+    app.openSftp();
+
+    window.innerWidth = 639;
+    window.dispatchEvent(new Event("resize"));
+    app.reconcileCompactPanels();
+    expect(ai.isOpen("a")).toBe(true);
+    expect(app.sftpOpenForTab("a")).toBe(false);
+    expect(app.sftpOpenForTab("b")).toBe(true);
+    expect(ai.panelWidth("a")).toBe(420);
+    expect(app.sftpPanelWidthForTab("a")).toBe(460);
+    expect(ai.position()).toBe("left");
+
+    window.innerWidth = 900;
+    window.dispatchEvent(new Event("resize"));
+    app.reconcileCompactPanels();
+    expect(app.sftpOpenForTab("a")).toBe(false);
+    stop();
+  });
+
+  it("keeps unsupported targets closed without closing an existing AI panel", async () => {
+    const app = await loadAppModule();
+    const ai = await import("../ai/store.svelte.ts");
+    app.addTab(local("local"));
+    app.openAiPanel("local");
+
+    app.openSftp();
+    app.openAiPanel("home");
+    app.openAiPanel("missing");
+
+    expect(ai.isOpen("local")).toBe(true);
+    expect(app.sftpOpen()).toBe(false);
+    expect(ai.isOpen("home")).toBe(false);
+    expect(ai.isOpen("missing")).toBe(false);
+  });
+
+  it("a delayed AI teardown cannot reopen SFTP after the user switches back", async () => {
+    const app = await loadAppModule();
+    const ai = await import("../ai/store.svelte.ts");
+    app.addTab({ id: "a", type: "ssh", label: "A" });
+    app.openAiPanel("a");
+    const closePanel = ai.closePanel;
+    let finish!: () => void;
+    const teardown = new Promise<void>((resolve) => { finish = resolve; });
+    vi.spyOn(ai, "closePanel").mockImplementationOnce((tabId) => {
+      void closePanel(tabId);
+      return teardown;
+    });
+
+    app.openSftp();
+    expect(app.sftpOpenForTab("a")).toBe(true);
+    expect(ai.isOpen("a")).toBe(false);
+    app.openAiPanel("a");
+    finish();
+    await teardown;
+
+    expect(ai.isOpen("a")).toBe(true);
+    expect(app.sftpOpenForTab("a")).toBe(false);
+  });
+
+  it("reports an automatic AI close failure without delaying SFTP visibility", async () => {
+    const app = await loadAppModule();
+    const ai = await import("../ai/store.svelte.ts");
+    const { toasts } = await import("./toast.svelte.ts");
+    app.addTab({ id: "a", type: "ssh", label: "A" });
+    app.openAiPanel("a");
+    const closePanel = ai.closePanel;
+    vi.spyOn(ai, "closePanel").mockImplementationOnce((tabId) => {
+      void closePanel(tabId);
+      return Promise.reject(new Error("conversation archive failed"));
+    });
+
+    app.openSftp();
+
+    expect(app.sftpOpenForTab("a")).toBe(true);
+    expect(ai.isOpen("a")).toBe(false);
+    await vi.waitFor(() => {
+      expect(toasts()).toContainEqual(expect.objectContaining({
+        kind: "error", message: "conversation archive failed",
+      }));
+    });
+  });
+});
+
+describe("MRU toggle disables reordering", () => {
+  it("appends new tabs at the end and does not move on focus when off", async () => {
+    const app = await loadAppModule();
+    await app.setTabMru(false);
+
+    app.addTab(local("a"));
+    app.addTab(local("b"));
+    app.addTab(local("c"));
+    // Plain insertion order — the pre-MRU behavior.
+    expect(app.tabs().map((t) => t.id)).toEqual(["home", "a", "b", "c"]);
+
+    app.setActiveTab("a");
+    expect(app.tabs().map((t) => t.id)).toEqual(["home", "a", "b", "c"]);
+    expect(app.activeTabId()).toBe("a");
+  });
+
+  it("resumes move-to-front once re-enabled", async () => {
+    const app = await loadAppModule();
+    await app.setTabMru(false);
+    app.addTab(local("a"));
+    app.addTab(local("b")); // [home, a, b]
+
+    await app.setTabMru(true);
+    app.setActiveTab("b"); // b at idx 2 → front
+    expect(app.tabs().map((t) => t.id)).toEqual(["home", "b", "a"]);
+  });
+
+  it("defaults to disabled (insertion order) with no setting loaded", async () => {
+    const app = await loadAppModule();
+    app.addTab(local("a"));
+    app.addTab(local("b"));
+    expect(app.tabs().map((t) => t.id)).toEqual(["home", "a", "b"]);
+  });
+});
+
+describe("settings navigation", () => {
+  it("returns through settings parents before restoring the same workspace and pane", async () => {
+    vi.stubGlobal("window", Object.assign(new EventTarget(), { innerWidth: 400 }));
+    const app = await loadAppModule();
+    app.addTab(local("workspace"));
+    app.addPane("workspace", "right", local("pane"));
+    app.openConnectionEdit("ssh", "connection-1");
+    const tabs = app.tabs().map(tab => tab.id);
+
+    expect(app.settingsFullscreen()).toBe(true);
+    expect(app.settingsCanGoBack()).toBe(true);
+    expect(app.settingsBack()).toBe(true);
+    expect(app.settingsPage()).toBe("connections");
+    expect(app.settingsBack()).toBe(true);
+    expect(app.settingsPage()).toBe("menu");
+    expect(app.settingsActive()).toBe(true);
+    expect(app.settingsBack()).toBe(true);
+    expect(app.settingsActive()).toBe(false);
+    expect(app.settingsFullscreen()).toBe(false);
+    expect(app.settingsCanGoBack()).toBe(false);
+    expect(app.settingsBack()).toBe(false);
+    expect(app.activeWorkspaceId()).toBe("workspace");
+    expect(app.activePaneId()).toBe("pane");
+    expect(app.tabs().map(tab => tab.id)).toEqual(tabs);
+  });
+
+  it.each([
+    ["credential-edit", "credentials"],
+    ["playback", "recording-settings"],
+    ["recording-settings", "menu"],
+    ["appearance", "menu"],
+    ["shell-settings", "menu"],
+  ] as const)("returns from %s to %s", async (page, parent) => {
+    const app = await loadAppModule();
+    app.navigate(page, "item-1");
+
+    expect(app.settingsBack()).toBe(true);
+
+    expect(app.settingsPage()).toBe(parent);
+    expect(app.editingId()).toBeNull();
+    expect(app.settingsActive()).toBe(true);
+  });
+
+  it("opens the menu on a fresh compact entry and retains the chosen page across resize", async () => {
+    const viewport = Object.assign(new EventTarget(), { innerWidth: 900 });
+    vi.stubGlobal("window", viewport);
+    const app = await loadAppModule();
+    const layout = await import("./layout.svelte.ts");
+    const stop = layout.observeViewport();
+    app.navigate("credential-edit", "credential-1");
+
+    viewport.innerWidth = 400;
+    viewport.dispatchEvent(new Event("resize"));
+    expect(app.settingsFullscreen()).toBe(true);
+    expect(app.settingsPage()).toBe("credential-edit");
+    expect(app.editingId()).toBe("credential-1");
+    app.openSettings();
+    expect(app.settingsPage()).toBe("credential-edit");
+
+    viewport.innerWidth = 900;
+    viewport.dispatchEvent(new Event("resize"));
+    expect(app.settingsFullscreen()).toBe(false);
+    expect(app.settingsPage()).toBe("credential-edit");
+    expect(app.editingId()).toBe("credential-1");
+    app.closeSettings();
+    app.openSettings();
+    expect(app.settingsPage()).toBe("credential-edit");
+
+    app.closeSettings();
+    viewport.innerWidth = 400;
+    viewport.dispatchEvent(new Event("resize"));
+    app.openSettings();
+    expect(app.settingsPage()).toBe("menu");
+    expect(app.editingId()).toBeNull();
+    stop();
+  });
+
+  it("does not change the retained settings page when back is unhandled", async () => {
+    const app = await loadAppModule();
+    app.navigate("appearance");
+    app.closeSettings();
+
+    expect(app.settingsBack()).toBe(false);
+    expect(app.settingsPage()).toBe("appearance");
+  });
+});
+
+describe("connection editor navigation", () => {
+  it("opens a new connection with a selectable SSH type by default", async () => {
+    const app = await loadAppModule();
+
+    app.openConnectionCreate();
+
+    expect(app.settingsPage()).toBe("connection-edit");
+    expect(app.connectionEditorIntent()).toEqual({ mode: "create", kind: "ssh", sourceId: null });
+    expect(app.connectionTypeLocked()).toBe(false);
+  });
+
+  it("locks the source type while editing an existing connection", async () => {
+    const app = await loadAppModule();
+
+    app.openConnectionEdit("serial", "serial-1");
+
+    expect(app.settingsPage()).toBe("connection-edit");
+    expect(app.connectionEditorIntent()).toEqual({ mode: "edit", kind: "serial", sourceId: "serial-1" });
+    expect(app.connectionTypeLocked()).toBe(true);
+    expect(app.connectionUpdateId()).toBe("serial-1");
+  });
+
+  it("locks the source type while copying without turning the source into an edit target", async () => {
+    const app = await loadAppModule();
+
+    app.openConnectionCopy("telnet", "telnet-1");
+
+    expect(app.settingsPage()).toBe("connection-edit");
+    expect(app.connectionEditorIntent()).toEqual({ mode: "copy", kind: "telnet", sourceId: "telnet-1" });
+    expect(app.connectionTypeLocked()).toBe(true);
+    expect(app.connectionUpdateId()).toBeNull();
+  });
+
+  it("returns from the connection editor to the unified list", async () => {
+    const app = await loadAppModule();
+    app.openConnectionCreate("forward");
+
+    app.settingsBack();
+
+    expect(app.settingsPage()).toBe("connections");
+  });
+});
+
+describe("connectTelnetProfile", () => {
+  it("carries the explicit echo mode into the terminal tab", async () => {
+    const app = await loadAppModule();
+
+    app.connectTelnetProfile({
+      id: "telnet-1",
+      name: "switch",
+      host: "192.0.2.10",
+      port: 23,
+      input_newline: "crlf",
+      output_newline: "raw",
+      local_echo: false,
+      echo_mode: "off",
+      backspace: "del",
+      login_script: "send super-secret",
+      group_id: "prod",
+    });
+
+    expect(app.tabs()[1].meta?.echo_mode).toBe("off");
+    expect(app.tabs()[1].meta?.profileId).toBe("telnet-1");
+    expect(app.tabs()[1].meta?.groupId).toBe("prod");
+    expect(app.tabs()[1].meta?.login_script).toBeUndefined();
+  });
+
+  it("maps the legacy local_echo flag when echo_mode is absent", async () => {
+    const app = await loadAppModule();
+    const legacy = {
+      id: "telnet-legacy",
+      name: "legacy switch",
+      host: "192.0.2.11",
+      port: 23,
+      input_newline: "crlf",
+      output_newline: "raw",
+      local_echo: true,
+      backspace: "del",
+      login_script: "",
+      group_id: null,
+    };
+
+    app.connectTelnetProfile(legacy);
+
+    expect(app.tabs()[1].meta?.echo_mode).toBe("on");
+    expect(app.tabs()[1].meta?.groupId).toBe("");
+  });
+});
+
+describe("connectSerialProfile", () => {
+  it.each(["prod", null])("snapshots the connection group %s with the port", async (groupId) => {
+    const app = await loadAppModule();
+    const profile = {
+      id: "serial-1", name: "console", port: "/dev/ttyUSB0",
+      baud_rate: 115200, data_bits: 8, parity: "none", stop_bits: 1,
+      flow_control: "none", xany: false, input_newline: "crlf", output_newline: "raw",
+      local_echo: false, backspace: "del", slow_send: false, input_mode: "text",
+      output_mode: "text", login_script: "", group_id: groupId,
+    };
+
+    app.connectSerialProfile(profile);
+    profile.group_id = "test";
+    profile.port = "/dev/ttyUSB1";
+
+    expect(app.tabs()[1].meta?.groupId).toBe(groupId ?? "");
+    expect(app.tabs()[1].meta?.port).toBe("/dev/ttyUSB0");
+  });
+});
+
+describe("command block split mode", () => {
+  it("shares one in-flight load across terminals", async () => {
+    let resolveSetting!: (value: unknown) => void;
+    invokeMock.mockImplementationOnce(() => new Promise((resolve) => {
+      resolveSetting = resolve;
+    }));
+    const app = await loadAppModule();
+
+    const first = app.loadCommandBlockSplitMode();
+    const second = app.loadCommandBlockSplitMode();
+    expect(invokeMock).toHaveBeenCalledTimes(1);
+
+    resolveSetting("prompt");
+    await expect(Promise.all([first, second])).resolves.toEqual(["prompt", "prompt"]);
+  });
+
+  it("loads prompt mode but falls back to Enter for an unknown stored value", async () => {
+    invokeMock.mockResolvedValueOnce("prompt");
+    let app = await loadAppModule();
+    expect(await app.loadCommandBlockSplitMode()).toBe("prompt");
+
+    invokeMock.mockResolvedValueOnce("future-mode");
+    app = await loadAppModule();
+    expect(await app.loadCommandBlockSplitMode()).toBe("enter");
+  });
+
+  it("reports a load failure while retaining the Enter fallback", async () => {
+    invokeMock.mockRejectedValueOnce(new Error("settings unavailable"));
+    const app = await loadAppModule();
+
+    await expect(app.loadCommandBlockSplitMode()).resolves.toBe("enter");
+
+    const { dismiss, toasts } = await import("./toast.svelte.ts");
+    expect(toasts()).toContainEqual(expect.objectContaining({
+      kind: "error",
+      message: "settings unavailable",
+    }));
+    for (const item of [...toasts()]) dismiss(item.id);
+  });
+
+  it("persists a supported mode through the shared settings command", async () => {
+    const app = await loadAppModule();
+
+    await app.setCommandBlockSplitMode("prompt");
+
+    expect(app.commandBlockSplitMode()).toBe("prompt");
+    expect(invokeMock).toHaveBeenCalledWith("set_setting", {
+      key: "command_block_split_mode",
+      value: "prompt",
+    });
+  });
+});
+
+describe("command block line limit", () => {
+  it("uses the safe default when unset and persists a user value", async () => {
+    invokeMock.mockResolvedValueOnce(null);
+    const app = await loadAppModule();
+
+    await expect(app.loadCommandBlockMaxLines()).resolves.toBe(50);
+    await app.setCommandBlockMaxLines(320);
+
+    expect(app.commandBlockMaxLines()).toBe(320);
+    expect(invokeMock).toHaveBeenCalledWith("set_setting", {
+      key: "command_block_max_lines",
+      value: "320",
+    });
+  });
+
+  it("clamps imported and user-entered values to the supported range", async () => {
+    invokeMock.mockResolvedValueOnce("50000");
+    const app = await loadAppModule();
+
+    await expect(app.loadCommandBlockMaxLines()).resolves.toBe(900);
+    await app.setCommandBlockMaxLines(1);
+
+    expect(app.commandBlockMaxLines()).toBe(10);
+    expect(invokeMock).toHaveBeenCalledWith("set_setting", {
+      key: "command_block_max_lines",
+      value: "10",
+    });
+  });
+});
+
+describe("terminal control routing", () => {
+  function controls() {
+    return {
+      getSelection: vi.fn(() => ""),
+      paste: vi.fn(),
+      writeControl: vi.fn(),
+      sendArrow: vi.fn(),
+      sendText: vi.fn(),
+      focus: vi.fn(),
+    };
+  }
+
+  it("closing a hidden pane leaves the active pane's control keys connected", async () => {
+    const app = await loadAppModule();
+    const a = controls();
+    const b = controls();
+    app.addTab(local("a"));
+    app.addTab(local("b"));
+    app.registerTerminalControls("a", a);
+    app.registerTerminalControls("b", b);
+    app.setActiveTab("a");
+
+    app.unregisterTerminalControls("b");
+    app.sendToTerminal("\x1b");
+    app.sendArrow("A", 5);
+
+    expect(a.writeControl).toHaveBeenCalledWith("\x1b");
+    expect(a.sendArrow).toHaveBeenCalledWith("A", 5);
+    expect(b.writeControl).not.toHaveBeenCalled();
+    expect(b.sendArrow).not.toHaveBeenCalled();
+  });
+
+  it("routes to the newly active pane without registering again and keeps raw controls separate from text", async () => {
+    const app = await loadAppModule();
+    const a = controls();
+    const b = controls();
+    app.addTab(local("a"));
+    app.addTab(local("b"));
+    app.registerTerminalControls("a", a);
+    app.registerTerminalControls("b", b);
+    app.setActiveTab("a");
+    app.sendToTerminal("\t");
+
+    app.setActiveTab("b");
+    app.sendToTerminal("\x1b");
+    app.sendArrow("D", 0);
+    app.sendTextToActiveTerminal("line\n");
+
+    expect(a.writeControl).toHaveBeenCalledExactlyOnceWith("\t");
+    expect(a.sendArrow).not.toHaveBeenCalled();
+    expect(b.writeControl).toHaveBeenCalledExactlyOnceWith("\x1b");
+    expect(b.sendArrow).toHaveBeenCalledExactlyOnceWith("D", 0);
+    expect(b.sendText).toHaveBeenCalledExactlyOnceWith("line\n");
+  });
+
+  it("sends nothing when the active route has no registered terminal", async () => {
+    const app = await loadAppModule();
+    const a = controls();
+    app.addTab(local("a"));
+    app.registerTerminalControls("a", a);
+    app.setActiveTab("home");
+    app.sendToTerminal("\x1b");
+    app.sendArrow("B", 0);
+    app.sendTextToActiveTerminal("line\n");
+
+    app.setActiveTab("a");
+    app.unregisterTerminalControls("a");
+    app.sendToTerminal("\x1b");
+    app.sendArrow("B", 0);
+    expect(a.writeControl).not.toHaveBeenCalled();
+    expect(a.sendArrow).not.toHaveBeenCalled();
+    expect(a.sendText).not.toHaveBeenCalled();
+  });
+});
+
+describe("terminal key modifier lock", () => {
+  // Two ways to arm a modifier on the compact keybar:
+  //  - short tap (setCtrl): one-shot — arms for the NEXT key, then clears
+  //  - long-press (lockCtrl): sticky — stays armed across many keys until tapped off
+  // The distinction lives entirely in clearModifiers: it clears one-shot arms but
+  // must leave locks untouched, so a locked Ctrl keeps producing Ctrl+arrow on
+  // every tap without re-arming.
+
+  it("a short tap is one-shot: armed until clearModifiers, then gone", async () => {
+    const app = await loadAppModule();
+    app.setCtrl(true);
+    expect(app.ctrlActive()).toBe(true);
+    expect(app.ctrlLocked()).toBe(false); // a tap never locks
+    app.clearModifiers();
+    expect(app.ctrlActive()).toBe(false); // one-shot cleared after the key
+  });
+
+  it("a long-press lock survives clearModifiers", async () => {
+    const app = await loadAppModule();
+    app.lockCtrl();
+    expect(app.ctrlActive()).toBe(true);
+    expect(app.ctrlLocked()).toBe(true);
+    app.clearModifiers();
+    expect(app.ctrlActive()).toBe(true); // locked: NOT cleared
+    expect(app.ctrlLocked()).toBe(true);
+  });
+
+  it("tapping a locked modifier off releases the lock", async () => {
+    const app = await loadAppModule();
+    app.lockCtrl();
+    app.setCtrl(false);
+    expect(app.ctrlActive()).toBe(false);
+    expect(app.ctrlLocked()).toBe(false);
+  });
+
+  it("keeps ctrl and alt independent across one-shot and lock", async () => {
+    const app = await loadAppModule();
+    app.lockCtrl();      // ctrl sticky
+    app.setAlt(true);    // alt one-shot
+    app.clearModifiers();
+    expect(app.ctrlActive()).toBe(true);  // ctrl locked -> survives
+    expect(app.altActive()).toBe(false);  // alt one-shot -> cleared
+    expect(app.altLocked()).toBe(false);
+  });
+
+  it("locks alt symmetrically", async () => {
+    const app = await loadAppModule();
+    app.lockAlt();
+    expect(app.altActive()).toBe(true);
+    expect(app.altLocked()).toBe(true);
+    app.clearModifiers();
+    expect(app.altActive()).toBe(true);
+  });
+});
+
+describe("soft keyboard gate", () => {
+  // The system keyboard opens ONLY from the keybar's keyboard button; terminal
+  // taps never pop it (issue #225). The pane owns show/hide and registers the
+  // toggle here; the store mirrors the open state for the button's styling.
+
+  it("routes toggleSoftKeyboard to the registered pane controller", async () => {
+    const app = await loadAppModule();
+    let calls = 0;
+    app.registerSoftKeyboardToggle(() => { calls += 1; });
+
+    app.toggleSoftKeyboard();
+
+    expect(calls).toBe(1);
+  });
+
+  it("mirrors the open state and resets it when the pane unregisters", async () => {
+    const app = await loadAppModule();
+    const toggle = () => {};
+    app.registerSoftKeyboardToggle(toggle);
+    app.setSoftKeyboardOpen(true);
+    expect(app.softKeyboardOpen()).toBe(true);
+
+    app.unregisterSoftKeyboardToggle(toggle);
+
+    expect(app.softKeyboardOpen()).toBe(false);
+    // No controller registered — a tap is a silent no-op, not a throw.
+    app.toggleSoftKeyboard();
+  });
+
+  it("a hidden pane unregistering must not clear the active pane's slot", async () => {
+    // Panes stay mounted per tab; a later-mounted pane steals the slot, and a
+    // stale pane being destroyed must not wipe the current owner.
+    const app = await loadAppModule();
+    const stale = () => {};
+    let activeCalls = 0;
+    const active = () => { activeCalls += 1; };
+    app.registerSoftKeyboardToggle(stale);
+    app.registerSoftKeyboardToggle(active);
+    app.setSoftKeyboardOpen(true);
+
+    app.unregisterSoftKeyboardToggle(stale);
+
+    // No re-registration after the stale unregister: if it had wrongly cleared
+    // the slot, the toggle would be a no-op (activeCalls 0); if it had wrongly
+    // reset the state, softKeyboardOpen would read false.
+    app.toggleSoftKeyboard();
+    expect(activeCalls).toBe(1);
+    expect(app.softKeyboardOpen()).toBe(true);
+  });
+});
+
+describe("tab bar bulk close targets", () => {
+  it("uses visible tab order, preserves Home and handles empty sides", async () => {
+    const app = await loadAppModule();
+    for (const id of ["a", "b", "c"]) app.addTab(local(id));
+    expect(app.tabCloseTargets("b", "left")).toEqual(["a"]);
+    expect(app.tabCloseTargets("b", "right")).toEqual(["c"]);
+    expect(app.tabCloseTargets("b", "others")).toEqual(["a", "c"]);
+    expect(app.tabCloseTargets("a", "left")).toEqual([]);
+    expect(app.tabCloseTargets("c", "right")).toEqual([]);
+    expect(app.tabCloseTargets("home", "current")).toEqual([]);
+    expect(app.tabCloseTargets("missing", "all")).toEqual([]);
+    app.moveTab(3, 1);
+    expect(app.tabCloseTargets("b", "left")).toEqual(["c", "a"]);
+  });
+
+  it("closes whole split workspaces without treating hidden panes as tabs", async () => {
+    const app = await loadAppModule();
+    app.addTab(local("a"));
+    app.addPane("a", "right", local("pane"));
+    app.addTab(local("b"));
+    expect(app.tabCloseTargets("b", "left")).toEqual(["a"]);
+    for (const id of app.tabCloseTargets("b", "left")) app.closeTab(id);
+    expect(app.tabs().map(tab => tab.id)).toEqual(["home", "b"]);
+    for (const id of app.tabCloseTargets("b", "all")) app.closeTab(id);
+    expect(app.tabs().map(tab => tab.id)).toEqual(["home"]);
+    expect(app.activeTabId()).toBe("home");
+  });
+});
+
+describe("split Home preference", () => {
+  it("defaults to Home for existing installations and retains an explicit opt-out after reload", async () => {
+    let stored: string | null = null;
+    invokeMock.mockImplementation(async (command, args) => {
+      if (command === "set_setting") stored = String(args?.value);
+      return command === "get_setting" ? stored : null;
+    });
+    let app = await loadAppModule();
+
+    expect(app.splitOpensHome()).toBe(true);
+    await expect(app.loadSplitOpensHome()).resolves.toBe(true);
+    await app.setSplitOpensHome(false);
+    expect(app.splitOpensHome()).toBe(false);
+    expect(invokeMock).toHaveBeenCalledWith("set_setting", {
+      key: "split_opens_home", value: "false",
+    });
+
+    app = await loadAppModule();
+    await expect(app.loadSplitOpensHome()).resolves.toBe(false);
+    await app.setSplitOpensHome(true);
+    app = await loadAppModule();
+    await expect(app.loadSplitOpensHome()).resolves.toBe(true);
+  });
+
+  it("waits for an in-flight startup read before deciding where to split", async () => {
+    let resolveSetting!: (value: string) => void;
+    invokeMock.mockReturnValueOnce(new Promise<string>((resolve) => { resolveSetting = resolve; }));
+    const app = await loadAppModule();
+
+    const startupRead = app.loadSplitOpensHome();
+    const splitRead = app.loadSplitOpensHome();
+    expect(invokeMock).toHaveBeenCalledTimes(1);
+    resolveSetting("false");
+
+    await expect(Promise.all([startupRead, splitRead])).resolves.toEqual([false, false]);
+  });
+
+  it("does not replace a newly saved preference with a stale pending read", async () => {
+    let resolveSetting!: (value: string) => void;
+    invokeMock.mockReturnValueOnce(new Promise<string>((resolve) => { resolveSetting = resolve; }));
+    const app = await loadAppModule();
+
+    const pendingRead = app.loadSplitOpensHome();
+    await app.setSplitOpensHome(false);
+    resolveSetting("true");
+
+    await expect(pendingRead).resolves.toBe(false);
+    expect(app.splitOpensHome()).toBe(false);
+  });
+
+  it("keeps the current behavior when saving fails", async () => {
+    const app = await loadAppModule();
+    await app.loadSplitOpensHome();
+    invokeMock.mockRejectedValueOnce(new Error("settings unavailable"));
+
+    await expect(app.setSplitOpensHome(false)).rejects.toThrow("settings unavailable");
+    expect(app.splitOpensHome()).toBe(true);
+    await expect(app.loadSplitOpensHome()).resolves.toBe(true);
+  });
+});

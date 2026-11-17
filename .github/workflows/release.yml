@@ -10,7 +10,7 @@ permissions:
 jobs:
   # ── Tests (gate for all build jobs) ──────────────────────────────
   # 跑一次 ubuntu 即可：测试是平台无关的纯函数 + 协议解析。
-  # build-desktop / build-android 都 needs: test —— 失败时不浪费 runner。
+  # 各平台构建都 needs: test —— 失败时不浪费 runner。
   test:
     runs-on: ubuntu-22.04
     steps:
@@ -27,22 +27,69 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: src-tauri
+          workspaces: .
 
-      # cargo test 会编译整个 crate（含 wry / tauri）。复用 build-desktop
-      # linux 的同款 system deps，否则 webkit2gtk 链接失败。
+      # Workspace tests cover shared core, CLI and app; the Tauri adapter
+      # check also needs the Linux desktop libraries.
+      # Run the real zsh completion regression tests instead of skipping them.
       - run: |
           sudo apt-get update
           sudo apt-get install -y \
             libgtk-3-dev libwebkit2gtk-4.1-dev \
-            libayatana-appindicator3-dev librsvg2-dev libudev-dev
+            libayatana-appindicator3-dev librsvg2-dev libudev-dev zsh
 
       - name: Frontend tests (vitest)
         run: npm test
 
+      - name: Build preparation tests (node)
+        run: npm run test:build
+
+      - name: Prepare pinned OHOS framework sources
+        run: node ohos/scripts/prepare-ohos-sources.mjs
+
+      - name: OHOS framework tests (node)
+        run: node --test --test-concurrency=2 ohos/framework/tests/*.test.mjs
+
+      - name: Build frontend for embedded server
+        run: npm run build
+
       - name: Backend tests (cargo)
-        working-directory: src-tauri
-        run: cargo test
+        run: cargo test --workspace --all-features
+
+      - name: OHOS native helper tests (host cargo)
+        run: cargo test --manifest-path ohos/Cargo.toml --lib --locked
+        env:
+          CARGO_TARGET_DIR: ${{ github.workspace }}/target
+
+      - name: Check standalone CLI and headless server
+        run: |
+          cargo check -p rssh-cli
+          cargo check -p rssh-app --no-default-features --features server --bin rssh-server
+          for package in rssh-core rssh-cli rssh-app; do
+            features=()
+            if [ "$package" = rssh-app ]; then features=(--features server); fi
+            dependencies=$(cargo tree -p "$package" --no-default-features --edges normal,build "${features[@]}")
+            if grep -Eq '(^|[[:space:]])(tauri([-a-z]+)?|wry|tao) v' <<< "$dependencies"; then
+              echo "Unexpected GUI dependency in $package" >&2
+              exit 1
+            fi
+          done
+
+  # Stable releases upload the signed App Pack to AGC and submit it for review.
+  build-ohos:
+    needs: test
+    if: ${{ !contains(github.ref_name, '-') }}
+    # The reusable workflow needs push access to read draft release notes.
+    permissions:
+      contents: write
+    uses: ./.github/workflows/release-ohos.yml
+    with:
+      version: ${{ github.ref_name }}
+    secrets:
+      OHOS_COMMAND_LINE_TOOLS_URL: ${{ secrets.OHOS_COMMAND_LINE_TOOLS_URL }}
+      OHOS_SIGNING_BUNDLE_BASE64: ${{ secrets.OHOS_SIGNING_BUNDLE_BASE64 }}
+      AGC_SERVICE_ACCOUNT_JSON: ${{ secrets.AGC_SERVICE_ACCOUNT_JSON }}
+      AGC_APP_ID: ${{ secrets.AGC_APP_ID }}
 
   # ── Desktop (macOS / Linux / Windows) ────────────────────────────
   build-desktop:
@@ -55,7 +102,7 @@ jobs:
             target: aarch64-apple-darwin
             os_name: macos
             arch: aarch64
-          - os: macos-14
+          - os: macos-15-intel
             target: x86_64-apple-darwin
             os_name: macos
             arch: x86_64
@@ -85,7 +132,7 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: src-tauri
+          workspaces: .
 
       - if: runner.os == 'Linux'
         run: |
@@ -99,44 +146,40 @@ jobs:
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
           npm version "${VERSION}" --no-git-tag-version --allow-same-version
-          cd src-tauri
-          sed -i.bak "s/\"version\": \".*\"/\"version\": \"${VERSION}\"/" tauri.conf.json && rm -f tauri.conf.json.bak
-          sed -i.bak "s/^version = \".*\"/version = \"${VERSION}\"/" Cargo.toml && rm -f Cargo.toml.bak
-
-      - name: Build CLI
-        working-directory: src-tauri
-        run: cargo build --release --features cli --bin rssh-cli --target ${{ matrix.target }}
-
-      - name: Stage CLI for bundling
-        shell: bash
-        run: |
-          mkdir -p src-tauri/bin
-          NAME="rssh-cli"
-          if [[ "${{ matrix.target }}" == *windows* ]]; then NAME="rssh-cli.exe"; fi
-          cp "src-tauri/target/${{ matrix.target }}/release/${NAME}" src-tauri/bin/
+          sed -i.bak "s/\"version\": \".*\"/\"version\": \"${VERSION}\"/" app/tauri.conf.json && rm -f app/tauri.conf.json.bak
+          for manifest in app/Cargo.toml core/Cargo.toml cli/Cargo.toml; do
+            sed -i.bak "s/^version = \".*\"/version = \"${VERSION}\"/" "$manifest" && rm -f "$manifest.bak"
+          done
 
       - name: Build Tauri app
-        run: npx tauri build --target ${{ matrix.target }}
+        run: npm run tauri -- build --target ${{ matrix.target }}
         env:
           APPLE_SIGNING_IDENTITY: ${{ runner.os == 'macOS' && '-' || '' }}
 
       # linuxdeploy bakes .DirIcon as an absolute symlink into the runner's
       # build path (/home/runner/work/...), which breaks AppImage unpackers
       # like AppManager ("Symlink target not found"). Make it relative. (#91)
+      # A failure here has to fail the job: the error used to be swallowed,
+      # so a broken AppImage was published with a green build. (#318)
       - name: Fix AppImage icon symlink
         if: runner.os == 'Linux'
         shell: bash
         run: |
-          BUNDLE="src-tauri/target/${{ matrix.target }}/release/bundle"
-          APPIMAGE="$(ls "${BUNDLE}"/appimage/*.AppImage 2>/dev/null | head -1 || true)"
-          [ -n "$APPIMAGE" ] && bash .github/scripts/fix-appimage-icon.sh "$APPIMAGE" || echo "No AppImage; skipping."
+          set -euo pipefail
+          BUNDLE="target/${{ matrix.target }}/release/bundle"
+          APPIMAGE="$(find "${BUNDLE}/appimage" -maxdepth 1 -name '*.AppImage' -print -quit 2>/dev/null || true)"
+          if [ -z "${APPIMAGE}" ]; then
+            echo "No AppImage to fix; skipping."
+            exit 0
+          fi
+          bash .github/scripts/fix-appimage-icon.sh "${APPIMAGE}"
 
       - name: Rename artifacts
         shell: bash
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
           PREFIX="rssh-${VERSION}-${{ matrix.os_name }}-${{ matrix.arch }}"
-          BUNDLE="src-tauri/target/${{ matrix.target }}/release/bundle"
+          BUNDLE="target/${{ matrix.target }}/release/bundle"
           mkdir -p dist
 
           for f in "${BUNDLE}"/dmg/*.dmg;            do [ -f "$f" ] && cp "$f" "dist/${PREFIX}.dmg";       done
@@ -158,7 +201,7 @@ jobs:
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
           PORTABLE="rssh-${VERSION}-windows-x86_64-portable"
-          REL="src-tauri/target/${{ matrix.target }}/release"
+          REL="target/${{ matrix.target }}/release"
           mkdir -p "${PORTABLE}"
           cp "${REL}/rssh.exe" "${PORTABLE}/"
           cp "${REL}/rssh-cli.exe" "${PORTABLE}/"
@@ -192,8 +235,7 @@ jobs:
           java-version: 21
 
       - name: Build rssh-server (for plugin)
-        working-directory: src-tauri
-        run: cargo build --release --features server --bin rssh-server --target ${{ matrix.target }}
+        run: cargo build --release -p rssh-app --features server --bin rssh-server --target ${{ matrix.target }}
 
       - name: Build JetBrains plugin
         shell: bash
@@ -201,7 +243,7 @@ jobs:
           VERSION="${GITHUB_REF_NAME#v}"
           BIN="rssh-server"
           [[ "${{ matrix.target }}" == *windows* ]] && BIN="rssh-server.exe"
-          SRV="$(pwd)/src-tauri/target/${{ matrix.target }}/release/${BIN}"
+          SRV="$(pwd)/target/${{ matrix.target }}/release/${BIN}"
           chmod +x idea-plugin/gradlew || true
           (cd idea-plugin && ./gradlew --no-daemon clean buildPlugin \
             -PrsshIdeVersion=2024.2 \
@@ -246,7 +288,7 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: src-tauri
+          workspaces: .
 
       - name: Setup Android SDK & NDK
         uses: android-actions/setup-android@v3
@@ -267,35 +309,36 @@ jobs:
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
           npm version "${VERSION}" --no-git-tag-version --allow-same-version
-          cd src-tauri
-          sed -i "s/\"version\": \".*\"/\"version\": \"${VERSION}\"/" tauri.conf.json
-          sed -i "s/^version = \".*\"/version = \"${VERSION}\"/" Cargo.toml
+          sed -i "s/\"version\": \".*\"/\"version\": \"${VERSION}\"/" app/tauri.conf.json
+          for manifest in app/Cargo.toml core/Cargo.toml cli/Cargo.toml; do
+            sed -i "s/^version = \".*\"/version = \"${VERSION}\"/" "$manifest"
+          done
 
       - name: Setup signing
         run: |
-          echo "${{ secrets.ANDROID_KEYSTORE_BASE64 }}" | base64 -d > src-tauri/gen/android/release.jks
+          echo "${{ secrets.ANDROID_KEYSTORE_BASE64 }}" | base64 -d > android/release.jks
           printf 'storeFile=release.jks\nstorePassword=%s\nkeyAlias=%s\nkeyPassword=%s\n' \
             "${{ secrets.ANDROID_KEYSTORE_PASSWORD }}" \
             "${{ secrets.ANDROID_KEY_ALIAS }}" \
             "${{ secrets.ANDROID_KEY_PASSWORD }}" \
-            > src-tauri/gen/android/key.properties
+            > android/key.properties
 
       # Two invocations: plain --apk builds the universal APK (all 4 ABIs,
       # incl. x86 emulators); --split-per-abi replaces that output with one
       # APK per requested target, so it must be a second run. The arm64 leg
       # reuses the cargo cache from the universal build — only repackaging.
       - name: Build Android APK (universal)
-        run: npx tauri android build --apk
+        run: npm run tauri -- android build --apk
 
       - name: Build Android APK (arm64 split)
-        run: npx tauri android build --apk --split-per-abi --target aarch64
+        run: npm run tauri -- android build --apk --split-per-abi --target aarch64
 
       - name: Rename APKs
         shell: bash
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
           mkdir -p dist
-          APK_ROOT=src-tauri/gen/android/app/build/outputs/apk
+          APK_ROOT=app/gen/android/app/build/outputs/apk
           UNIVERSAL=$(find "$APK_ROOT/universal" -name '*.apk' -type f | head -1)
           ARM64=$(find "$APK_ROOT/arm64" -name '*.apk' -type f | head -1)
           cp "$UNIVERSAL" "dist/rssh-${VERSION}-android-universal.apk"
