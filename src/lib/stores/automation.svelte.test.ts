@@ -7,7 +7,7 @@ const mocks = vi.hoisted(() => ({
 }));
 vi.mock("@tauri-apps/api/core", () => ({ invoke: mocks.invoke }));
 vi.mock("./app.svelte.ts", () => ({
-  isMobile: false,
+  capabilities: () => ({ terminalAutomation: true }),
   connectedSessions: mocks.sessions,
   automationTerminal: mocks.terminal,
 }));

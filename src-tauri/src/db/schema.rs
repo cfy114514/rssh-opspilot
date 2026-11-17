@@ -871,6 +871,48 @@ pub fn migrate(conn: &Connection) -> AppResult<()> {
         )?;
     }
 
+    if version < 31
+        && table_exists(conn, "groups")?
+        && !column_exists(conn, "groups", "terminal_background")?
+    {
+        conn.execute_batch("ALTER TABLE groups ADD COLUMN terminal_background TEXT DEFAULT NULL;")?;
+    }
+
+    if version < 32 && table_exists(conn, "groups")? {
+        // Some development v31 databases already contain the boolean flag.
+        let needs_wave_flag = !column_exists(conn, "groups", "terminal_waves_enabled")?;
+        if needs_wave_flag {
+            conn.execute_batch(
+                "ALTER TABLE groups ADD COLUMN terminal_waves_enabled INTEGER NOT NULL DEFAULT 0;",
+            )?;
+        }
+        if column_exists(conn, "groups", "terminal_background")? {
+            if needs_wave_flag {
+                conn.execute_batch(
+                    "UPDATE groups SET terminal_waves_enabled = (terminal_background IS NOT NULL);",
+                )?;
+            }
+            conn.execute_batch("ALTER TABLE groups DROP COLUMN terminal_background;")?;
+        }
+    }
+
+    if version < 33 && table_exists(conn, "settings")? {
+        conn.execute_batch(
+            "INSERT INTO settings (key, value) VALUES (
+                 'startup_action',
+                 CASE
+                     WHEN (SELECT value FROM settings WHERE key = 'session_restore.enabled') = 'true'
+                         THEN 'restore'
+                     WHEN (SELECT value FROM settings WHERE key = 'open_local_on_startup') = 'true'
+                         THEN 'local'
+                     ELSE 'home'
+                 END
+             ) ON CONFLICT(key) DO NOTHING;
+             DELETE FROM settings
+             WHERE key IN ('session_restore.enabled', 'open_local_on_startup');",
+        )?;
+    }
+
     if version < SCHEMA_VERSION {
         conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
     }
@@ -880,6 +922,310 @@ pub fn migrate(conn: &Connection) -> AppResult<()> {
 
 #[cfg(test)]
 mod tests {
+    fn startup_settings_fixture(restore: Option<&str>, local: Option<&str>) -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+             PRAGMA user_version = 32;",
+        )
+        .unwrap();
+        for (key, value) in [
+            ("session_restore.enabled", restore),
+            ("open_local_on_startup", local),
+        ] {
+            if let Some(value) = value {
+                conn.execute(
+                    "INSERT INTO settings (key, value) VALUES (?1, ?2)",
+                    params![key, value],
+                )
+                .unwrap();
+            }
+        }
+        conn
+    }
+
+    #[test]
+    fn migration_33_defaults_new_databases_to_home() {
+        let conn = Connection::open_in_memory().unwrap();
+
+        migrate(&conn).unwrap();
+        migrate(&conn).unwrap();
+
+        let action: String = conn
+            .query_row(
+                "SELECT value FROM settings WHERE key = 'startup_action'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(action, "home");
+    }
+
+    #[test]
+    fn migration_33_combines_startup_flags_and_preserves_the_snapshot() {
+        let cases = [
+            (None, None, "home"),
+            (None, Some("false"), "home"),
+            (None, Some("true"), "local"),
+            (Some("false"), None, "home"),
+            (Some("false"), Some("false"), "home"),
+            (Some("false"), Some("true"), "local"),
+            (Some("true"), None, "restore"),
+            (Some("true"), Some("false"), "restore"),
+            (Some("true"), Some("true"), "restore"),
+        ];
+        let snapshot = r#"{"version":1,"terminals":[{"type":"local"}],"active":0}"#;
+        for (restore, local, expected) in cases {
+            let conn = startup_settings_fixture(restore, local);
+            conn.execute(
+                "INSERT INTO settings (key, value) VALUES ('session_restore.snapshot', ?1)",
+                [snapshot],
+            )
+            .unwrap();
+
+            migrate(&conn).unwrap();
+            migrate(&conn).unwrap();
+
+            let settings: Vec<(String, String)> = conn
+                .prepare("SELECT key, value FROM settings ORDER BY key")
+                .unwrap()
+                .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+                .unwrap()
+                .collect::<Result<_, _>>()
+                .unwrap();
+            assert_eq!(
+                settings,
+                vec![
+                    ("session_restore.snapshot".into(), snapshot.into()),
+                    ("startup_action".into(), expected.into()),
+                ],
+                "restore={restore:?}, local={local:?}",
+            );
+            let version: u32 = conn
+                .pragma_query_value(None, "user_version", |row| row.get(0))
+                .unwrap();
+            assert_eq!(version, SCHEMA_VERSION);
+        }
+    }
+
+    #[test]
+    fn migration_33_preserves_existing_startup_actions_and_later_user_changes() {
+        for current in ["home", "local", "restore", "", "unknown"] {
+            let conn = startup_settings_fixture(Some("true"), Some("true"));
+            conn.execute(
+                "INSERT INTO settings (key, value) VALUES ('startup_action', ?1)",
+                [current],
+            )
+            .unwrap();
+
+            migrate(&conn).unwrap();
+
+            let action: String = conn
+                .query_row(
+                    "SELECT value FROM settings WHERE key = 'startup_action'",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(action, current);
+            let count: u32 = conn
+                .query_row("SELECT COUNT(*) FROM settings", [], |row| row.get(0))
+                .unwrap();
+            assert_eq!(count, 1);
+
+            conn.execute(
+                "UPDATE settings SET value = 'local' WHERE key = 'startup_action'",
+                [],
+            )
+            .unwrap();
+            migrate(&conn).unwrap();
+            let action: String = conn
+                .query_row(
+                    "SELECT value FROM settings WHERE key = 'startup_action'",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(action, "local");
+        }
+    }
+
+    #[test]
+    fn migration_33_rolls_back_if_legacy_key_cleanup_fails() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("rssh.db");
+        let conn = Connection::open(&path).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+             INSERT INTO settings (key, value) VALUES
+                 ('session_restore.enabled', 'true'),
+                 ('open_local_on_startup', 'true');
+             CREATE TRIGGER reject_startup_cleanup
+             BEFORE DELETE ON settings WHEN OLD.key = 'open_local_on_startup'
+             BEGIN SELECT RAISE(ABORT, 'cleanup failed'); END;
+             PRAGMA user_version = 32;",
+        )
+        .unwrap();
+        drop(conn);
+
+        assert!(crate::db::Db::open(dir.path()).is_err());
+
+        let conn = Connection::open(path).unwrap();
+        let settings: Vec<(String, String)> = conn
+            .prepare("SELECT key, value FROM settings ORDER BY key")
+            .unwrap()
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(
+            settings,
+            vec![
+                ("open_local_on_startup".into(), "true".into()),
+                ("session_restore.enabled".into(), "true".into()),
+            ],
+        );
+        let version: u32 = conn
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, 32);
+    }
+
+    #[test]
+    fn migration_32_preserves_groups_and_defaults_group_waves_to_disabled() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch("CREATE TABLE groups (id TEXT PRIMARY KEY, name TEXT NOT NULL, color TEXT NOT NULL, sort_order INTEGER NOT NULL);
+            INSERT INTO groups VALUES ('prod', 'Production', '#FF0000', 1);
+            PRAGMA user_version = 30;").unwrap();
+        super::migrate(&conn).unwrap();
+        super::migrate(&conn).unwrap();
+        let group: (String, bool) = conn
+            .query_row(
+                "SELECT name, terminal_waves_enabled FROM groups WHERE id = 'prod'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(group, ("Production".into(), false));
+        assert!(conn
+            .execute("UPDATE groups SET terminal_waves_enabled = NULL", [])
+            .is_err());
+        let version: u32 = conn
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, SCHEMA_VERSION);
+        assert!(!super::column_exists(&conn, "groups", "terminal_background").unwrap());
+    }
+
+    #[test]
+    fn migration_32_converts_legacy_wave_colors_to_flags() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "PRAGMA foreign_keys = ON;
+             CREATE TABLE groups (
+                 id TEXT PRIMARY KEY, name TEXT NOT NULL, color TEXT NOT NULL,
+                 sort_order INTEGER NOT NULL, terminal_background TEXT DEFAULT NULL
+             );
+             INSERT INTO groups VALUES
+                 ('off', 'Disabled', '#112233', 1, NULL),
+                 ('on', 'Enabled', '#445566', 2, '#AABBCC');
+             CREATE TABLE profiles (id TEXT PRIMARY KEY, group_id TEXT REFERENCES groups(id));
+             INSERT INTO profiles VALUES ('ssh', 'on');
+             PRAGMA user_version = 31;",
+        )
+        .unwrap();
+
+        migrate(&conn).unwrap();
+        migrate(&conn).unwrap();
+
+        let groups: Vec<(String, String, String, i32, bool)> = conn
+            .prepare("SELECT id, name, color, sort_order, terminal_waves_enabled FROM groups ORDER BY id")
+            .unwrap()
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(
+            groups,
+            vec![
+                ("off".into(), "Disabled".into(), "#112233".into(), 1, false),
+                ("on".into(), "Enabled".into(), "#445566".into(), 2, true),
+            ]
+        );
+        let profile_group: String = conn
+            .query_row(
+                "SELECT group_id FROM profiles WHERE id = 'ssh'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(profile_group, "on");
+        assert!(!column_exists(&conn, "groups", "terminal_background").unwrap());
+        assert!(conn
+            .execute("UPDATE groups SET terminal_waves_enabled = NULL", [])
+            .is_err());
+        conn.execute(
+            "INSERT INTO groups (id, name, color, sort_order) VALUES ('new', 'New', '#778899', 3)",
+            [],
+        )
+        .unwrap();
+        let enabled: bool = conn
+            .query_row(
+                "SELECT terminal_waves_enabled FROM groups WHERE id = 'new'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(!enabled);
+        let version: u32 = conn
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn migration_32_preserves_existing_wave_flags() {
+        // Also cover a database where both columns are present: the flag wins.
+        for legacy_column in [false, true] {
+            let conn = Connection::open_in_memory().unwrap();
+            conn.execute_batch(
+                "CREATE TABLE groups (
+                     id TEXT PRIMARY KEY, name TEXT NOT NULL, color TEXT NOT NULL,
+                     sort_order INTEGER NOT NULL,
+                     terminal_waves_enabled INTEGER NOT NULL DEFAULT 0
+                 );
+                 INSERT INTO groups VALUES
+                     ('off', 'Disabled', '#112233', 1, 0),
+                     ('on', 'Enabled', '#445566', 2, 1);
+                 PRAGMA user_version = 31;",
+            )
+            .unwrap();
+            if legacy_column {
+                conn.execute_batch(
+                    "ALTER TABLE groups ADD COLUMN terminal_background TEXT DEFAULT NULL;
+                     UPDATE groups SET terminal_background = '#AABBCC' WHERE id = 'off';",
+                )
+                .unwrap();
+            }
+
+            migrate(&conn).unwrap();
+            migrate(&conn).unwrap();
+
+            let flags: Vec<bool> = conn
+                .prepare("SELECT terminal_waves_enabled FROM groups ORDER BY id")
+                .unwrap()
+                .query_map([], |row| row.get(0))
+                .unwrap()
+                .collect::<Result<_, _>>()
+                .unwrap();
+            assert_eq!(flags, vec![false, true]);
+            assert!(!column_exists(&conn, "groups", "terminal_background").unwrap());
+            let version: u32 = conn
+                .pragma_query_value(None, "user_version", |row| row.get(0))
+                .unwrap();
+            assert_eq!(version, SCHEMA_VERSION);
+        }
+    }
     use super::*;
 
     #[test]

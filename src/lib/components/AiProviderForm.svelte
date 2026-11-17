@@ -89,7 +89,7 @@
   });
 
   $effect(() => {
-    if (formProtocol !== "codex-subscription" || app.isMobile) return;
+    if (formProtocol !== "codex-subscription" || !app.capabilities().codexSubscription) return;
     void refreshCodex();
   });
 
@@ -106,7 +106,7 @@
   );
 
   const formError = $derived(
-    app.isMobile && formProtocol === "codex-subscription"
+    !app.capabilities().codexSubscription && formProtocol === "codex-subscription"
       ? t("ai.settings.codex.mobile_unavailable")
       : !formName.trim()
       ? t("ai.settings.provider.error.name_required")
@@ -122,7 +122,7 @@
   );
 
   function selectProtocol(protocol: LlmProtocol) {
-    if (app.isMobile && protocol === "codex-subscription") return;
+    if (!app.capabilities().codexSubscription && protocol === "codex-subscription") return;
     if (protocol !== formProtocol) {
       loginGeneration += 1;
       codexRefreshSequence += 1;
@@ -197,7 +197,7 @@
   /** 拉模型：显式按钮，失败给反馈（接口不开放的厂商就留空手填）。 */
   async function loadModels(silent = false, sequence = codexRefreshSequence) {
     const protocol = formProtocol;
-    if (protocol === "codex-subscription" && app.isMobile) return;
+    if (protocol === "codex-subscription" && !app.capabilities().codexSubscription) return;
     const request = ++modelRequestSequence;
     const current = () => !destroyed && request === modelRequestSequence
       && protocol === formProtocol && (protocol !== "codex-subscription" || sequence === codexRefreshSequence);
@@ -250,7 +250,7 @@
   }
 
   async function configureExecutable() {
-    if (app.isMobile || codexConfiguring) return;
+    if (!app.capabilities().codexSubscription || codexConfiguring) return;
     codexConfiguring = true;
     note = null;
     try {
@@ -329,7 +329,7 @@
   }
 
   async function startLogin() {
-    if (app.isMobile || loginStarting || loginId) return;
+    if (!app.capabilities().codexSubscription || loginStarting || loginId) return;
     const generation = loginGeneration;
     loginStarting = true;
     note = null;
@@ -370,7 +370,7 @@
   }
 
   async function logout() {
-    if (app.isMobile || loginStarting) return;
+    if (!app.capabilities().codexSubscription || loginStarting) return;
     await cancelPendingLogin();
     codexStatusLoading = true;
     note = null;
@@ -412,7 +412,7 @@
         class:p-ant={card.protocol === "anthropic-messages"}
         class:p-codex={card.protocol === "codex-subscription"}
         aria-pressed={formProtocol === card.protocol}
-        disabled={app.isMobile && card.protocol === "codex-subscription"}
+        disabled={!app.capabilities().codexSubscription && card.protocol === "codex-subscription"}
         onclick={() => selectProtocol(card.protocol)}
       >
         <span class="protocol-icon"><AppIcon name="ai" size={17} /></span>
@@ -431,7 +431,7 @@
 
   {#if formProtocol === "codex-subscription"}
     <div class="codex-note">{t("ai.settings.codex.description")}</div>
-    {#if app.isMobile}
+    {#if !app.capabilities().codexSubscription}
       <div class="form-error">{t("ai.settings.codex.mobile_unavailable")}</div>
     {:else}
       <div class="field">

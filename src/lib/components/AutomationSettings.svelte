@@ -39,7 +39,7 @@
 <div class="page">
   <h3>{t("automation.title")}</h3>
   <p>{t("automation.description")}</p>
-  {#if app.isMobile}
+  {#if !app.capabilities().terminalAutomation}
     <p>{t("automation.desktop_only")}</p>
   {:else if connection}
     <div class="card">

@@ -21,7 +21,7 @@ export function sharedSessions() { return _connection ? app.connectedSessions() 
 
 /** Every window joins the active bridge, including windows opened after enablement. */
 export function beginMonitoring() {
-  if (monitoring || app.isMobile) return;
+  if (monitoring || !app.capabilities().terminalAutomation) return;
   monitoring = true;
   void poll();
 }
@@ -34,7 +34,7 @@ export function endMonitoring() {
 }
 
 export async function start(allowInput: boolean) {
-  if (_busy || app.isMobile) return;
+  if (_busy || !app.capabilities().terminalAutomation) return;
   _busy = true;
   _error = null;
   const current = ++generation;
