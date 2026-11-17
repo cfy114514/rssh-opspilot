@@ -55,7 +55,8 @@ export interface OutputFeederOptions {
 export function createOutputFeeder(opts: OutputFeederOptions): OutputFeeder {
     const setTimer = opts.setTimer ?? ((h, ms) => setTimeout(h, ms));
     const clearTimer = opts.clearTimer ?? ((h) => clearTimeout(h));
-    const queue: QueuedChunk[] = [];
+    const queue: (QueuedChunk | undefined)[] = [];
+    let head = 0;
     const waiters: ((complete: boolean) => void)[] = [];
     let queuedBytes = 0;
     let inflight: QueuedChunk | null = null;
@@ -64,7 +65,7 @@ export function createOutputFeeder(opts: OutputFeederOptions): OutputFeeder {
     let disposed = false;
 
     function settleWaiters() {
-        if (!disposed && (inflight !== null || queue.length > 0)) return;
+        if (!disposed && (inflight !== null || head < queue.length)) return;
         for (const resolve of waiters.splice(0)) resolve(!disposed);
     }
 
@@ -77,11 +78,23 @@ export function createOutputFeeder(opts: OutputFeederOptions): OutputFeeder {
         });
     }
 
+    function dequeue(): QueuedChunk | undefined {
+        const chunk = queue[head];
+        if (!chunk) return undefined;
+        queue[head++] = undefined; // release the consumed payload immediately
+        queuedBytes -= chunk.size;
+        if (head * 2 >= queue.length) {
+            // In the worst case, move no more entries than we've consumed.
+            queue.splice(0, head);
+            head = 0;
+        }
+        return chunk;
+    }
+
     function feedNext() {
         if (disposed) return;
-        const next = queue.shift();
+        const next = dequeue();
         if (next === undefined) return;
-        queuedBytes -= next.size;
         writeChunk(next);
     }
 
@@ -99,12 +112,11 @@ export function createOutputFeeder(opts: OutputFeederOptions): OutputFeeder {
             // Memory cap: drop OLDEST whole chunks. Flood output is garbage
             // the user is about to interrupt anyway; the seam may mis-render
             // one line. Acceptable.
-            while (queue.length > 0
+            while (head < queue.length
                 && queuedBytes + (inflight?.size ?? 0) + chunk.size > opts.maxPendingBytes) {
-                const oldest = queue.shift()!;
-                queuedBytes -= oldest.size;
+                dequeue();
             }
-            if (queue.length === 0 && inflight === null) {
+            if (head === queue.length && inflight === null) {
                 writeChunk(chunk);      // idle: straight through, no timer
                 return;
             }
@@ -113,7 +125,7 @@ export function createOutputFeeder(opts: OutputFeederOptions): OutputFeeder {
         },
         flush() {
             if (disposed) return Promise.resolve(false);
-            if (!inflight && queue.length === 0) return Promise.resolve(true);
+            if (!inflight && head === queue.length) return Promise.resolve(true);
             return new Promise((resolve) => { waiters.push(resolve); });
         },
         pendingBytes() {
@@ -121,6 +133,7 @@ export function createOutputFeeder(opts: OutputFeederOptions): OutputFeeder {
         },
         dropPending() {
             queue.length = 0;
+            head = 0;
             queuedBytes = 0;
             settleWaiters();
         },
@@ -133,6 +146,7 @@ export function createOutputFeeder(opts: OutputFeederOptions): OutputFeeder {
         dispose() {
             disposed = true;
             queue.length = 0;
+            head = 0;
             queuedBytes = 0;
             inflight = null;
             settleWaiters();

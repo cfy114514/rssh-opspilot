@@ -1,4 +1,5 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
+import { Terminal } from "@xterm/xterm";
 import { readViewportSnapshot, readViewportText, type ViewportSource } from "./viewport-snapshot.ts";
 
 /**
@@ -24,6 +25,7 @@ function fakeSource(
         baseY,
         cursorX: opts.cursorX ?? 0,
         cursorY: opts.cursorY ?? 0,
+        getNullCell: () => ({ getChars: () => "", getWidth: () => 1 }),
         getLine(y: number) {
           const line = lines[y - viewportY];
           if (line === undefined) return undefined;
@@ -96,6 +98,48 @@ describe("readViewportSnapshot", () => {
 });
 
 describe("readViewportText", () => {
+  it("reads real Unicode, scrolled, alternate and resized viewports with one cell allocation per read", async () => {
+    const terminal = new Terminal({ cols: 16, rows: 4, allowProposedApi: true, scrollback: 100 });
+    const write = (data: string) => new Promise<void>((resolve) => terminal.write(data, resolve));
+    const getCell = vi.spyOn(Object.getPrototypeOf(terminal.buffer.active.getLine(0)), "getCell");
+    const getNullCell = vi.spyOn(Object.getPrototypeOf(terminal.buffer.active), "getNullCell");
+    try {
+      await write("a 中 e\u0301 😀\r\nx \u00a0\r\n\x1b[31mred\x1b[0m\r\n\tend");
+      expect(readViewportText(terminal)).toEqual(["a 中 e\u0301 😀", "x", "red", "        end"]);
+
+      for (const zeroWidth of ["\u200d", "\u0301", "\ufe0f", "\u200b"]) {
+        terminal.reset();
+        terminal.resize(24, 1);
+        await write(`abc\t${zeroWidth}\tX`);
+        expect(readViewportText(terminal)).toEqual(["abc            X"]);
+      }
+
+      terminal.reset();
+      terminal.resize(6, 3);
+      await write("zero\r\none\r\ntwo\r\nthree\r\nfour");
+      expect(readViewportText(terminal)).toEqual(["two", "three", "four"]);
+      terminal.scrollToTop();
+      expect(readViewportText(terminal)).toEqual(["zero", "one", "two"]);
+
+      await write("\x1b[?1049h\x1b[Halt");
+      expect(readViewportText(terminal)).toEqual(["alt", "", ""]);
+      await write("\x1b[?1049l");
+      expect(readViewportText(terminal)).toEqual(["zero", "one", "two"]);
+      terminal.resize(4, 3);
+      terminal.scrollToBottom();
+      expect(readViewportText(terminal)).toEqual(["thre", "e", "four"]);
+      expect([...readViewportSnapshot(terminal).filled]).toEqual([1, 1, 1, 1, 1, 0, 0, 0, 1, 1, 1, 1]);
+      const allocations = getNullCell.mock.calls.length
+        + getCell.mock.calls.filter(([, reusable]) => !reusable).length;
+      // Ten text reads and one snapshot, regardless of the number of cells.
+      expect(allocations).toBeLessThanOrEqual(11);
+    } finally {
+      getCell.mockRestore();
+      getNullCell.mockRestore();
+      terminal.dispose();
+    }
+  });
+
   it("joins each row's glyphs into a line, right-trimmed", () => {
     expect(readViewportText(fakeSource(["abc", "hi "], { cols: 3 }))).toEqual(["abc", "hi"]);
   });
@@ -123,6 +167,7 @@ describe("readViewportText", () => {
           baseY: 0,
           cursorX: 0,
           cursorY: 0,
+          getNullCell: () => ({ getChars: () => "", getWidth: () => 1 }),
           getLine: () => ({
             getCell: (x: number) =>
               x === 0
@@ -149,6 +194,7 @@ describe("readViewportSnapshot wide glyphs", () => {
           baseY: 0,
           cursorX: 0,
           cursorY: 0,
+          getNullCell: () => ({ getChars: () => "", getWidth: () => 1 }),
           getLine: () => ({
             getCell: (x: number) =>
               x === 0

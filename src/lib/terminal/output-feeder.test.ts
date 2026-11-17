@@ -69,6 +69,24 @@ describe("createOutputFeeder", () => {
         expect(f.pendingBytes()).toBe(0);
     });
 
+    it("preserves the newest FIFO tail through sustained evictions and compaction", async () => {
+        const w = stubWrite();
+        const capacity = 256;
+        const f = createOutputFeeder({ write: w.write, maxPendingBytes: capacity * 4 });
+        f.push("head");
+        for (let i = 0; i < 2048; i++) f.push(i.toString(16).padStart(4, "0"));
+        expect(f.pendingBytes()).toBe(capacity * 4);
+        const flushed = f.flush();
+        for (let i = 0; i < capacity; i++) w.drain();
+        expect(await flushed).toBe(true);
+        expect(w.written).toEqual([
+            "head",
+            ...Array.from({ length: capacity - 1 }, (_, i) =>
+                (2048 - (capacity - 1) + i).toString(16).padStart(4, "0")),
+        ]);
+        expect(f.pendingBytes()).toBe(0);
+    });
+
     it("concurrent flushes wait for all output, including later pushes", async () => {
         const w = stubWrite();
         const f = createOutputFeeder({ write: w.write, maxPendingBytes: 1024 });
