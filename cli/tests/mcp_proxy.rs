@@ -52,6 +52,7 @@ fn start(
             bridge_id: uuid::Uuid::new_v4().to_string(),
             endpoint,
             token: token.into(),
+            cloud_read_only: false,
         },
     )
     .unwrap();
@@ -173,6 +174,76 @@ fn stdio_starts_offline_reconnects_after_revocation_and_never_replays_input() {
     );
     server.join().unwrap();
     drop(third);
+    drop(stdin);
+    assert!(child.wait().unwrap().success());
+}
+
+#[test]
+fn cloud_proxy_advertises_one_read_only_tool_and_rejects_all_other_calls() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut child = Command::new(env!("CARGO_BIN_EXE_rssh-cli"))
+        .args(["mcp-proxy", "--cloud-read-only"])
+        .env("RSSH_MCP_DISCOVERY_DIR", temp.path().join("mcp"))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut stdin = child.stdin.take().unwrap();
+    let mut stdout = BufReader::new(child.stdout.take().unwrap());
+    assert_eq!(
+        rpc(
+            &mut stdin,
+            &mut stdout,
+            json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":PROTOCOL}})
+        )["result"]["protocolVersion"],
+        PROTOCOL
+    );
+    writeln!(
+        stdin,
+        "{{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}}"
+    )
+    .unwrap();
+    let tools = rpc(
+        &mut stdin,
+        &mut stdout,
+        json!({"jsonrpc":"2.0","id":2,"method":"tools/list"}),
+    );
+    let catalog = tools["result"]["tools"].as_array().unwrap();
+    assert_eq!(catalog.len(), 1);
+    assert_eq!(catalog[0]["name"], "read_selected_terminal");
+    assert_eq!(catalog[0]["annotations"]["readOnlyHint"], true);
+    let call = |id, name, args| json!({"jsonrpc":"2.0","id":id,"method":"tools/call","params":{"name":name,"arguments":args}});
+    for (id, name) in [
+        (3, "write_terminal"),
+        (4, "send_key"),
+        (5, "read_terminal"),
+        (6, "list_terminals"),
+    ] {
+        assert_eq!(
+            rpc(&mut stdin, &mut stdout, call(id, name, json!({})))["error"]["code"],
+            -32602
+        );
+    }
+    assert_eq!(
+        rpc(
+            &mut stdin,
+            &mut stdout,
+            call(
+                7,
+                "read_selected_terminal",
+                json!({"sessionId":"different"})
+            )
+        )["error"]["code"],
+        -32602
+    );
+    assert_eq!(
+        rpc(
+            &mut stdin,
+            &mut stdout,
+            call(8, "read_selected_terminal", json!({}))
+        )["error"]["code"],
+        -32000
+    );
     drop(stdin);
     assert!(child.wait().unwrap().success());
 }

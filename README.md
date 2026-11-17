@@ -277,10 +277,18 @@ The persistent workbench indicator includes **Stop access**.
   Connection details describe the transport, URL, and headers; adapt them to your
   client's configuration format.
 
-ChatGPT Desktop needs a mode or local bridge that can reach local MCP servers,
-or browser interaction for the console. A cloud-hosted connector cannot reach
-your computer's `127.0.0.1`. RSSH does not automatically install a ChatGPT connector
-or expose your terminal publicly.
+- **Cloud agent (read-only):** configure a private tunnel with the stdio
+  command `rssh mcp-proxy --cloud-read-only`, for example through the
+  [OpenAI Secure MCP Tunnel](https://developers.openai.com/api/docs/guides/secure-mcp-tunnels).
+  Register it once in a workspace that supports custom MCP servers, restrict
+  access to intended users, and run its tunnel client on the same computer as RSSH. In RSSH, explicitly select one
+  connected terminal under the private cloud toggle, then start access. The
+  tunnel only receives a bounded recent screen snapshot with RSSH redaction
+  applied. Redaction is not a guarantee against disclosure. This profile
+  does not accept commands, control keys, raw output cursors, or a caller-selected
+  terminal ID. Stopping access revokes local and cloud grants. RSSH neither opens
+  a public listener nor stores cloud credentials or starts the tunnel client.
+  We test the local endpoint and stdio adapter separately from real workspace authorization.
 
 The official Rust MCP SDK implements the protocol. Available tools:
 

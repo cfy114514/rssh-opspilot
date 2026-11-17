@@ -12,10 +12,14 @@ pub async fn automation_start(
     window: tauri::Window,
     state: State<'_, Arc<AppState>>,
     writable: bool,
+    cloud_session_id: Option<String>,
 ) -> AppResult<ConnectionInfo> {
-    state
-        .automation
-        .start(&SessionOwner::Window(window.label().into()), writable)
+    rssh_core::automation::start_for_owner(
+        &state,
+        &SessionOwner::Window(window.label().into()),
+        writable,
+        cloud_session_id,
+    )
 }
 
 #[tauri::command]

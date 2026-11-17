@@ -86,7 +86,13 @@ rssh opspilot-memory clear --yes
 注册到支持 stdio MCP 的本机 Agent。不在 PATH 时请使用 CLI 的绝对路径。
 Agent 可以在接入关闭时启动；开启接入或停止后再次开启，不用重启 Agent 或更新配置。
 停止即撤销访问，允许输入仍需单独开启；同时共享的 RSSH 实例必须只保留一个。
-该方式不对公网开放，也不能直接用于云端 Agent。
+该方式不对公网开放。
+
+云端 Agent 使用单独的只读入口：将 `rssh mcp-proxy --cloud-read-only` 一次性注册到
+[私有 MCP 隧道](https://developers.openai.com/api/docs/guides/secure-mcp-tunnels)，在 RSSH 本机运行隧道客户端。
+在「外部终端接入」勾选云端授权，明确选择一个终端后开启接入。云端只会收到近期的脱敏屏幕快照，
+不能发命令或按键，也不能自行切换终端。脱敏无法保证移除所有秘密；停止接入即撤销授权。
+RSSH 不保存云端凭据，也不会自动开通隧道。
 
 ### 开发快速开始
 

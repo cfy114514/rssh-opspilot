@@ -8,16 +8,23 @@
 
   const localClientConfig = '{ "mcpServers": { "rssh": { "command": "rssh", "args": ["mcp-proxy"] } } }';
   let allowInput = $state(false);
+  let allowCloud = $state(false);
+  let cloudSessionId = $state("");
+  let connected = $derived(app.connectedSessions());
   let connection = $derived(automation.connection());
   let config = $derived(automation.connectionConfig());
 
   async function start() {
     try {
-      await automation.start(allowInput);
+      await automation.start(allowInput, allowCloud ? cloudSessionId : undefined);
     } catch (error) { toast.error(errMsg(error)); }
   }
   async function stop() {
-    try { await automation.stop(); } catch (error) { toast.error(errMsg(error)); }
+    try {
+      await automation.stop();
+      allowCloud = false;
+      cloudSessionId = "";
+    } catch (error) { toast.error(errMsg(error)); }
   }
   async function copy() {
     try { await writeText(config); toast.success(t("about.copied")); }
@@ -67,6 +74,7 @@
           {/each}
         </ul>
         {#if !automation.sharedSessions().length}<p>{t("automation.no_shared_sessions")}</p>{/if}
+        {#if connection.cloudReadOnly}<p>{t("automation.cloud_active")}</p>{/if}
         <code>{connection.endpoint}</code>
         <button class="btn" onclick={stop}>{t("automation.stop")}</button>
       </div>
@@ -86,7 +94,24 @@
         <span>{t("automation.allow_input")}</span>
       </label>
       <p>{t("automation.input_hint")}</p>
-      <button class="btn btn-accent" onclick={start} disabled={automation.busy()}>
+      <label class="choice">
+        <input type="checkbox" bind:checked={allowCloud} disabled={automation.busy()} />
+        <span>{t("automation.cloud_allow")}</span>
+      </label>
+      {#if allowCloud}
+        <label>
+          {t("automation.cloud_terminal")}
+          <select bind:value={cloudSessionId} disabled={automation.busy()}>
+            <option value="">{t("automation.cloud_select")}</option>
+            {#each connected as session (session.sessionId)}
+              <option value={session.sessionId}>{session.label} · {session.type}</option>
+            {/each}
+          </select>
+        </label>
+        <p>{t("automation.cloud_notice")}</p>
+        <code>rssh mcp-proxy --cloud-read-only</code>
+      {/if}
+      <button class="btn btn-accent" onclick={start} disabled={automation.busy() || (allowCloud && !connected.some(s => s.sessionId === cloudSessionId))}>
         {automation.busy() ? t("common.loading") : t("automation.start")}
       </button>
     {/if}

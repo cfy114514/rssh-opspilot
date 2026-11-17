@@ -3,6 +3,11 @@ import type { Messages } from "./en";
 /** 中文 UI 字符串。键必须与 en.ts 一致。 */
 const zh: Messages = {
   "automation.codex_title": "连接 Codex",
+  "automation.cloud_active": "私有云端隧道已获准只读访问选中的终端。",
+  "automation.cloud_allow": "允许私有云端隧道读取一个终端",
+  "automation.cloud_terminal": "要共享的终端",
+  "automation.cloud_select": "选择一个已连接的终端",
+  "automation.cloud_notice": "只有选中终端的近期屏幕内容可以传出此电脑。脱敏不保证移除所有秘密。即使启用了本机输入，云端也不能输入命令或按键。",
   "automation.local_agent_title": "本机 Agent · 一次注册",
   "automation.local_agent_hint": "在本机 Agent 中把 rssh mcp-proxy 注册为 stdio MCP 服务。注册时可以先关闭接入，之后在同一台电脑上开启 RSSH 接入，不用重启 Agent。",
   "automation.local_agent_copy": "复制本机 Agent 配置（不含令牌）",

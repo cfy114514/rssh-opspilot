@@ -2,7 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import * as app from "./app.svelte.ts";
 import { executeTerminalRequest, type AutomationRequest } from "../terminal/automation.ts";
 
-interface ConnectionInfo { bridgeId: string; endpoint: string; token: string }
+interface ConnectionInfo { bridgeId: string; endpoint: string; token: string; cloudReadOnly?: boolean }
 interface Status { connection: ConnectionInfo; writable: boolean }
 let _connection = $state<ConnectionInfo | null>(null);
 let _writable = $state(false);
@@ -33,13 +33,16 @@ export function endMonitoring() {
   _writable = false;
 }
 
-export async function start(allowInput: boolean) {
+export async function start(allowInput: boolean, cloudSessionId?: string) {
   if (_busy || !app.capabilities().terminalAutomation) return;
   _busy = true;
   _error = null;
   const current = ++generation;
   try {
-    const info = await invoke<ConnectionInfo>("automation_start", { writable: allowInput });
+    const info = await invoke<ConnectionInfo>("automation_start", {
+      writable: allowInput,
+      ...(cloudSessionId ? { cloudSessionId } : {}),
+    });
     if (current !== generation) {
       await invoke("automation_stop", { bridgeId: info.bridgeId });
       return;

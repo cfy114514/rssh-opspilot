@@ -343,6 +343,7 @@ mod tests {
             bridge_id: uuid::Uuid::new_v4().to_string(),
             endpoint: "http://127.0.0.1:1234/mcp".into(),
             token: "secret".into(),
+            cloud_read_only: false,
         };
         assert!(publish_at(&dir, &info).is_err());
     }
@@ -355,6 +356,7 @@ mod tests {
             bridge_id: uuid::Uuid::new_v4().to_string(),
             endpoint: "http://127.0.0.1:1234/mcp".into(),
             token: "secret".into(),
+            cloud_read_only: false,
         };
         let one = make();
         let two = make();

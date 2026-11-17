@@ -13,6 +13,8 @@ pub struct DiscoveryInfo {
     pub bridge_id: String,
     pub endpoint: String,
     pub token: String,
+    #[serde(default)]
+    pub cloud_read_only: bool,
 }
 
 pub struct Registration(PathBuf);
@@ -208,6 +210,7 @@ mod tests {
             bridge_id: uuid::Uuid::new_v4().to_string(),
             endpoint: "http://127.0.0.1:1234/mcp".into(),
             token: "secret".into(),
+            cloud_read_only: false,
         };
         let registration = publish_at(&dir, &info).unwrap();
         let link = dir.join(format!("{}.json", uuid::Uuid::new_v4()));
@@ -234,6 +237,7 @@ mod tests {
             bridge_id: uuid::Uuid::new_v4().to_string(),
             endpoint: "http://127.0.0.1:1234/mcp".into(),
             token: "token".into(),
+            cloud_read_only: false,
         };
         let a = make();
         let b = make();

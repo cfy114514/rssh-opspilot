@@ -21,7 +21,7 @@ use tokio::sync::oneshot;
 use tokio_util::sync::CancellationToken;
 
 use crate::error::{locked, AppError, AppResult};
-use crate::state::SessionOwner;
+use crate::state::{AppState, SessionOwner, SessionPhase};
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 const MAX_PENDING: usize = 16;
@@ -32,6 +32,7 @@ pub struct ConnectionInfo {
     pub bridge_id: String,
     pub endpoint: String,
     pub token: String,
+    pub cloud_read_only: bool,
 }
 
 #[derive(Clone, Serialize)]
@@ -87,6 +88,12 @@ struct Bridge {
     heartbeat: Mutex<Instant>,
     participants: Mutex<HashMap<SessionOwner, Participant>>,
     writable: bool,
+    cloud: Option<CloudReadGrant>,
+}
+
+struct CloudReadGrant {
+    session_id: String,
+    rules: Vec<crate::ai::sanitize::RedactRule>,
 }
 
 impl Drop for Bridge {
@@ -106,6 +113,15 @@ fn bridge_error() -> AppError {
 
 impl Automation {
     pub fn start(&self, owner: &SessionOwner, writable: bool) -> AppResult<ConnectionInfo> {
+        self.start_with_grant(owner, writable, None)
+    }
+
+    fn start_with_grant(
+        &self,
+        owner: &SessionOwner,
+        writable: bool,
+        cloud: Option<CloudReadGrant>,
+    ) -> AppResult<ConnectionInfo> {
         let mut bridges = locked(&self.bridges)?;
         for (_, old) in bridges.drain() {
             old.cancel.cancel();
@@ -119,6 +135,7 @@ impl Automation {
             info: ConnectionInfo {
                 bridge_id: uuid::Uuid::new_v4().to_string(),
                 endpoint: format!("http://{address}/mcp"),
+                cloud_read_only: cloud.is_some(),
                 token: format!(
                     "{}{}",
                     uuid::Uuid::new_v4().simple(),
@@ -130,6 +147,7 @@ impl Automation {
             heartbeat: Mutex::new(Instant::now()),
             participants: Mutex::new(HashMap::new()),
             writable,
+            cloud,
         });
         let info = bridge.info.clone();
         // The registration belongs to this bridge alone and is removed as soon
@@ -141,6 +159,7 @@ impl Automation {
                     bridge_id: info.bridge_id.clone(),
                     endpoint: info.endpoint.clone(),
                     token: info.token.clone(),
+                    cloud_read_only: info.cloud_read_only,
                 },
             )?;
             let cancel = bridge.cancel.clone();
@@ -338,6 +357,31 @@ fn authorized(bridge: &Bridge, request: &Request) -> bool {
         == Some(bridge.info.token.as_str())
 }
 
+/// Enabling the cloud path is a separate, explicitly scoped opt-in.
+pub fn start_for_owner(
+    state: &AppState,
+    owner: &SessionOwner,
+    writable: bool,
+    cloud_session_id: Option<String>,
+) -> AppResult<ConnectionInfo> {
+    let Some(session_id) = cloud_session_id else {
+        return state.automation.start(owner, writable);
+    };
+    let ready = locked(&state.lifecycle_sessions)?
+        .get(&session_id)
+        .is_some_and(|s| &s.owner == owner && s.phase() == SessionPhase::Ready);
+    if !ready {
+        return Err(bridge_error());
+    }
+    let rules = crate::ai::redact_rules::compiled(&state.db)?;
+    if rules.is_empty() {
+        return Err(bridge_error());
+    }
+    state
+        .automation
+        .start_with_grant(owner, writable, Some(CloudReadGrant { session_id, rules }))
+}
+
 #[derive(Clone)]
 struct TerminalServer(Arc<Bridge>);
 
@@ -392,9 +436,13 @@ impl ServerHandler for TerminalServer {
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResponse, ErrorData> {
         let bridge = &self.0;
-        if !terminal_mcp_tools(bridge.writable)
-            .iter()
-            .any(|t| t.name == request.name)
+        const CLOUD_READ: &str = "read_cloud_terminal";
+        let cloud = request.name == CLOUD_READ;
+        if (cloud && bridge.cloud.is_none())
+            || (!cloud
+                && !terminal_mcp_tools(bridge.writable)
+                    .iter()
+                    .any(|t| t.name == request.name))
         {
             return Ok(CallToolResult::error(vec![ContentBlock::text(
                 "Unknown or disabled terminal tool",
@@ -403,6 +451,7 @@ impl ServerHandler for TerminalServer {
         }
         let result = async {
             if bridge.cancel.is_cancelled() { return Err("Terminal access is stopped"); }
+            let grant = if cloud { bridge.cloud.as_ref() } else { None };
             let args = request.arguments.as_ref();
             let target = {
                 let mut participants = bridge.participants.lock().map_err(|_| "Terminal bridge unavailable")?;
@@ -411,7 +460,11 @@ impl ServerHandler for TerminalServer {
                     let terminals: Vec<_> = participants.values().flat_map(|p| p.sessions.iter().cloned()).collect();
                     return Ok(TerminalReply { id: String::new(), result: json!({"terminals": terminals, "writable": bridge.writable}), is_error: false });
                 }
-                let session_id = args.and_then(|a| a.get("sessionId")).and_then(Value::as_str).ok_or("Missing session ID")?;
+                let session_id = if let Some(grant) = grant {
+                    grant.session_id.as_str()
+                } else {
+                    args.and_then(|a| a.get("sessionId")).and_then(Value::as_str).ok_or("Missing session ID")?
+                };
                 let mut owners = participants.iter().filter(|(_, p)| p.sessions.iter().any(|s| s.session_id == session_id)).map(|(o, _)| o.clone());
                 let owner = owners.next().ok_or("Terminal session is unavailable or disconnected")?;
                 if owners.next().is_some() { return Err("Ambiguous terminal session"); }
@@ -428,8 +481,13 @@ impl ServerHandler for TerminalServer {
                 }
                 pending.insert(id.clone(), Pending {
                     request: TerminalRequest {
-                        id: id.clone(), name: request.name.to_string(),
-                        arguments: Value::Object(request.arguments.unwrap_or_default()),
+                        id: id.clone(),
+                        name: if cloud { "read_terminal".into() } else { request.name.to_string() },
+                        arguments: if let Some(grant) = grant {
+                            json!({"sessionId": grant.session_id, "lines": 20})
+                        } else {
+                            Value::Object(request.arguments.unwrap_or_default())
+                        },
                         expires_at: (SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default() + REQUEST_TIMEOUT).as_millis() as u64,
                     },
                     delivered: false, owner: target, reply: tx,
@@ -451,6 +509,28 @@ impl ServerHandler for TerminalServer {
                 }
             }
         }.await;
+        if cloud {
+            // The cloud transport receives a capped, redacted snapshot, never
+            // the local transport's raw output journal, metadata, or errors.
+            return Ok(match (result, &bridge.cloud) {
+                (Ok(reply), Some(grant)) if !reply.is_error && !bridge.cancel.is_cancelled() => {
+                    match reply.result["screen"].as_str() {
+                        Some(screen) => {
+                            let screen = crate::ai::sanitize::redact(screen, &grant.rules);
+                            let screen: String = screen.chars().take(8192).collect();
+                            CallToolResult::structured(json!({"screen": screen}))
+                        }
+                        None => CallToolResult::error(vec![ContentBlock::text(
+                            "Selected terminal unavailable",
+                        )]),
+                    }
+                }
+                _ => {
+                    CallToolResult::error(vec![ContentBlock::text("Selected terminal unavailable")])
+                }
+            }
+            .into());
+        }
         Ok(match result {
             Ok(reply) if reply.is_error => CallToolResult::structured_error(reply.result),
             Ok(reply) => CallToolResult::structured(reply.result),
@@ -515,6 +595,54 @@ mod tests {
             label: "host".into(),
             kind: "local".into(),
         }
+    }
+
+    #[tokio::test]
+    async fn cloud_snapshot_only_reads_the_granted_terminal_and_redacts_before_sending() {
+        let automation = Automation::default();
+        let owner = owner();
+        let client = reqwest::Client::builder().no_proxy().build().unwrap();
+        let local_only = automation.start(&owner, true).unwrap();
+        let params =
+            json!({"name": "read_cloud_terminal", "arguments": {"sessionId":"other","after":0}});
+        let reply = rpc(&client, &local_only, "tools/call", params.clone()).await;
+        assert_eq!(reply["result"]["isError"], true);
+
+        let grant = CloudReadGrant {
+            session_id: "shared".into(),
+            rules: vec![crate::ai::sanitize::RedactRule::new("TEST-SECRET", "[hidden]").unwrap()],
+        };
+        let info = automation
+            .start_with_grant(&owner, true, Some(grant))
+            .unwrap();
+        automation
+            .poll(
+                &owner,
+                &info.bridge_id,
+                vec![shared("shared"), shared("other")],
+            )
+            .unwrap();
+        let call = tokio::spawn({
+            let client = client.clone();
+            let info = info.clone();
+            async move { rpc(&client, &info, "tools/call", params).await }
+        });
+        let request = next_request(&automation, &owner, &info).await;
+        assert_eq!(request.name, "read_terminal");
+        assert_eq!(request.arguments, json!({"sessionId":"shared","lines":20}));
+        automation.reply(&owner, &info.bridge_id, TerminalReply {
+            id: request.id,
+            result: json!({"screen":"status=ok TEST-SECRET","output":{"chunks":[{"text":"RAW-SECRET"}]},"metadata":"private"}),
+            is_error: false,
+        }).unwrap();
+        let response = call.await.unwrap();
+        assert_eq!(
+            response["result"]["structuredContent"],
+            json!({"screen":"status=ok [hidden]"})
+        );
+        assert!(!response.to_string().contains("RAW-SECRET"));
+        assert!(!response.to_string().contains("TEST-SECRET"));
+        automation.stop(&owner);
     }
 
     #[tokio::test]

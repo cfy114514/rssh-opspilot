@@ -49,6 +49,17 @@ describe("external terminal grant lifetime", () => {
     expect(store.connectionConfig()).toBe("");
   });
 
+  it("passes cloud access only with an explicitly selected session", async () => {
+    await store.start(false, session.sessionId);
+    expect(mocks.invoke).toHaveBeenCalledWith("automation_start", {
+      writable: false, cloudSessionId: session.sessionId,
+    });
+    await store.stop();
+    mocks.invoke.mockClear();
+    await store.start(false);
+    expect(mocks.invoke).toHaveBeenCalledWith("automation_start", { writable: false });
+  });
+
   it("joins a bridge enabled by another window", async () => {
     active = { connection: info, writable: true };
     store.beginMonitoring();

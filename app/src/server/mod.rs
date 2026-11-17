@@ -761,9 +761,12 @@ async fn dispatch_async(
     tx: &mpsc::UnboundedSender<Message>,
 ) -> Result<Value, Value> {
     match cmd {
-        "automation_start" => ok(state
-            .automation
-            .start(owner, arg::<bool>(&args, "writable")?)),
+        "automation_start" => ok(rssh_core::automation::start_for_owner(
+            state,
+            owner,
+            arg::<bool>(&args, "writable")?,
+            optional_string_arg(&args, "cloudSessionId")?,
+        )),
         "dynamic_discovery_tool_status" => ok(
             crate::commands::discovery::dynamic_discovery_tool_status(arg(&args, "platform")?)
                 .await,

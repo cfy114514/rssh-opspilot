@@ -1,6 +1,11 @@
 /** English UI strings. Keep keys stable, sorted by area. */
 const en = {
   "automation.codex_title": "Connect Codex",
+  "automation.cloud_active": "Private cloud tunnel: read-only access to the selected terminal.",
+  "automation.cloud_allow": "Allow one terminal to be read through the private cloud tunnel",
+  "automation.cloud_terminal": "Terminal to share",
+  "automation.cloud_select": "Choose a connected terminal",
+  "automation.cloud_notice": "Only the selected terminal’s recent screen can leave this computer. Redaction is not a guarantee that secrets are removed. This profile never accepts commands or keys, even if local input is enabled.",
   "automation.local_agent_title": "Local agent · one-time setup",
   "automation.local_agent_hint": "Register rssh mcp-proxy in any local stdio MCP client. Start can stay off during registration; when you turn access on, the same agent can connect without restarting. Keep RSSH on the same computer.",
   "automation.local_agent_copy": "Copy local agent configuration (no token)",

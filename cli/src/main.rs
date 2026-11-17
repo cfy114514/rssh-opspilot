@@ -39,7 +39,11 @@ struct Cli {
 #[derive(Subcommand)]
 enum Cmd {
     /// Bridge a configured local MCP client to the active RSSH terminal access
-    McpProxy,
+    McpProxy {
+        /// Only a redacted view of one explicitly shared terminal. Use this profile for a private cloud tunnel.
+        #[arg(long)]
+        cloud_read_only: bool,
+    },
     /// Print the CLI version
     Version,
     /// Manage SSH profiles
@@ -297,8 +301,8 @@ fn main() {
         commands::completions::print_completions(shell);
         return;
     }
-    if matches!(cli.command, Some(Cmd::McpProxy)) {
-        if let Err(error) = commands::mcp_proxy::run() {
+    if let Some(Cmd::McpProxy { cloud_read_only }) = cli.command.as_ref() {
+        if let Err(error) = commands::mcp_proxy::run(*cloud_read_only) {
             eprintln!("MCP proxy: {error}");
             std::process::exit(1);
         }
@@ -325,7 +329,7 @@ fn main() {
 
     let result = match cli.command {
         None => commands::ls::cmd_list_profiles(&conn, None),
-        Some(Cmd::McpProxy) => unreachable!("handled before database initialization"),
+        Some(Cmd::McpProxy { .. }) => unreachable!("handled before database initialization"),
         Some(Cmd::Version) => unreachable!("handled before database initialization"),
         Some(Cmd::Profile { action }) => match action {
             ProfileCmd::List { query } => commands::ls::cmd_list_profiles(&conn, query.as_deref()),
