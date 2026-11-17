@@ -60,6 +60,44 @@ describe("external terminal grant lifetime", () => {
     expect(mocks.invoke).toHaveBeenCalledWith("automation_start", { writable: false });
   });
 
+  it("backs off while access is off and handles an active bridge at the faster rate", async () => {
+    vi.useFakeTimers();
+    try {
+      store.beginMonitoring();
+      await vi.advanceTimersByTimeAsync(1499);
+      expect(mocks.invoke.mock.calls.map(([command]) => command)).toEqual(["automation_status"]);
+      active = { connection: info, writable: false };
+      await vi.advanceTimersByTimeAsync(1);
+      expect(mocks.invoke.mock.calls.map(([command]) => command))
+        .toEqual(["automation_status", "automation_status", "automation_poll"]);
+      deliver([]);
+      await vi.advanceTimersByTimeAsync(149);
+      expect(mocks.invoke.mock.calls.filter(([command]) => command === "automation_status")).toHaveLength(2);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(mocks.invoke.mock.calls.filter(([command]) => command === "automation_status")).toHaveLength(3);
+      deliver([]);
+    } finally {
+      store.endMonitoring();
+      vi.useRealTimers();
+    }
+  });
+
+  it("starts access immediately without waiting for the idle timer", async () => {
+    vi.useFakeTimers();
+    try {
+      store.beginMonitoring();
+      await vi.advanceTimersByTimeAsync(0);
+      await store.start(false);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(mocks.invoke.mock.calls.map(([command]) => command))
+        .toEqual(["automation_status", "automation_start", "automation_status", "automation_poll"]);
+      deliver([]);
+    } finally {
+      store.endMonitoring();
+      vi.useRealTimers();
+    }
+  });
+
   it("joins a bridge enabled by another window", async () => {
     active = { connection: info, writable: true };
     store.beginMonitoring();

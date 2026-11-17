@@ -8,6 +8,10 @@ let _connection = $state<ConnectionInfo | null>(null);
 let _writable = $state(false);
 let _busy = $state(false);
 let _error = $state<unknown>(null);
+// Keep enabled sessions responsive without polling an inactive bridge 400
+// times a minute in every window. Local toggles still wake the loop immediately.
+const ACTIVE_POLL_MS = 150;
+const IDLE_POLL_MS = 1500;
 let timer: ReturnType<typeof setTimeout> | undefined;
 let generation = 0;
 let monitoring = false;
@@ -18,6 +22,12 @@ export function writable() { return _writable; }
 export function busy() { return _busy; }
 export function error() { return _error; }
 export function sharedSessions() { return _connection ? app.connectedSessions() : []; }
+
+function schedulePoll() {
+  clearTimeout(timer);
+  timer = undefined;
+  if (monitoring) timer = setTimeout(() => void poll(), _connection ? ACTIVE_POLL_MS : IDLE_POLL_MS);
+}
 
 /** Every window joins the active bridge, including windows opened after enablement. */
 export function beginMonitoring() {
@@ -80,7 +90,7 @@ async function poll() {
     }
   } finally {
     running = false;
-    if (monitoring) timer = setTimeout(() => void poll(), 150);
+    schedulePoll();
   }
 }
 
@@ -109,7 +119,7 @@ export async function stop() {
   _connection = null;
   _writable = false;
   try { if (bridgeId) await invoke("automation_stop", { bridgeId }); }
-  finally { if (monitoring && !running) timer = setTimeout(() => void poll(), 150); }
+  finally { if (!running) schedulePoll(); }
 }
 
 /** Explicit handoff data; never persisted to settings, sync, or localStorage. */
