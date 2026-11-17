@@ -1,97 +1,178 @@
 #![cfg(all(feature = "cli", any(unix, windows)))]
-use rssh_lib::automation_discovery::{publish_at, DiscoveryInfo};
+use rssh_lib::automation_discovery::{publish_at, DiscoveryInfo, Registration};
+use serde_json::{json, Value};
 use std::io::{BufRead, BufReader, Read, Write};
-use std::net::TcpListener;
-use std::process::{Command, Stdio};
+use std::net::{TcpListener, TcpStream};
+use std::path::Path;
+use std::process::{ChildStdin, ChildStdout, Command, Stdio};
+use std::thread::JoinHandle;
+use std::time::Duration;
 
-#[test]
-fn stdio_discovers_live_bridge_and_reports_revocation() {
-    let temp = tempfile::tempdir().unwrap();
-    let dir = temp.path().join(".rssh/mcp-discovery");
+const PROTOCOL: &str = "2025-03-26";
+
+fn request(socket: &mut TcpStream, token: &str) -> (String, Value) {
+    socket
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
+    let mut reader = BufReader::new(socket);
+    let mut headers = String::new();
+    loop {
+        let mut line = String::new();
+        assert!(reader.read_line(&mut line).unwrap() > 0);
+        if line == "\r\n" {
+            break;
+        }
+        headers.push_str(&line.to_ascii_lowercase());
+    }
+    assert!(headers.contains(&format!("authorization: bearer {token}\r\n")));
+    let length: usize = headers
+        .lines()
+        .find_map(|s| s.strip_prefix("content-length: "))
+        .unwrap()
+        .trim()
+        .parse()
+        .unwrap();
+    let mut body = vec![0; length];
+    reader.read_exact(&mut body).unwrap();
+    (headers, serde_json::from_slice(&body).unwrap())
+}
+
+fn start(
+    dir: &Path,
+    token: &'static str,
+    label: &'static str,
+    simulate_loss: bool,
+    stateful: bool,
+) -> (Registration, JoinHandle<()>) {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let endpoint = format!("http://{}/mcp", listener.local_addr().unwrap());
     let registration = publish_at(
-        &dir,
+        dir,
         &DiscoveryInfo {
             bridge_id: uuid::Uuid::new_v4().to_string(),
             endpoint,
-            token: "isolated-test-token".into(),
+            token: token.into(),
         },
     )
     .unwrap();
     let server = std::thread::spawn(move || {
-        for _ in 0..2 {
+        let methods: &[&str] = if stateful {
+            &["initialize", "notifications/initialized", "tools/call"]
+        } else {
+            &["initialize", "tools/call"]
+        };
+        for &method in methods {
             let (mut socket, _) = listener.accept().unwrap();
-            socket
-                .set_read_timeout(Some(std::time::Duration::from_secs(5)))
-                .unwrap();
-            let mut request = Vec::new();
-            loop {
-                let mut buf = [0u8; 4096];
-                let n = socket.read(&mut buf).unwrap();
-                assert!(n > 0);
-                request.extend_from_slice(&buf[..n]);
-                if let Some(end) = request.windows(4).position(|s| s == b"\r\n\r\n") {
-                    let header = String::from_utf8_lossy(&request[..end]).to_lowercase();
-                    let length: usize = header
-                        .lines()
-                        .find_map(|s| s.strip_prefix("content-length: "))
-                        .unwrap()
-                        .trim()
-                        .parse()
-                        .unwrap();
-                    if request.len() >= end + 4 + length {
-                        assert!(header.contains("authorization: bearer isolated-test-token"));
-                        break;
-                    }
-                }
+            let (headers, rpc) = request(&mut socket, token);
+            assert_eq!(rpc["method"], method);
+            if method != "initialize" {
+                assert_eq!(
+                    headers.contains("mcp-session-id: test-session\r\n"),
+                    stateful
+                );
             }
-            let body = r#"{"jsonrpc":"2.0","id":1,"result":{"ok":true}}"#;
-            write!(socket, "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\nconnection: close\r\nmcp-session-id: test-session\r\ncontent-length: {}\r\n\r\n{}", body.len(), body).unwrap();
+            if method == "notifications/initialized" {
+                write!(
+                    socket,
+                    "HTTP/1.1 202 Accepted\r\nconnection: close\r\ncontent-length: 0\r\n\r\n"
+                )
+                .unwrap();
+                continue;
+            }
+            if method == "tools/call" && simulate_loss {
+                // Simulate disconnect *after* input arrived. The proxy must
+                // surface uncertain delivery rather than repeat it.
+                return;
+            }
+            let result = if method == "initialize" {
+                assert_eq!(rpc["params"]["protocolVersion"], PROTOCOL);
+                json!({"protocolVersion":PROTOCOL,"capabilities":{"tools":{}},"serverInfo":{"name":"fixture","version":"0.1"}})
+            } else {
+                json!({"content":[{"type":"text","text":label}]})
+            };
+            let body = json!({"jsonrpc":"2.0","id":rpc["id"],"result":result}).to_string();
+            let session_header = if stateful {
+                "mcp-session-id: test-session\r\n"
+            } else {
+                ""
+            };
+            write!(socket,"HTTP/1.1 200 OK\r\ncontent-type: application/json\r\nconnection: close\r\n{session_header}content-length: {}\r\n\r\n{body}",body.len()).unwrap();
         }
     });
+    (registration, server)
+}
+
+fn rpc(stdin: &mut ChildStdin, stdout: &mut BufReader<ChildStdout>, msg: Value) -> Value {
+    writeln!(stdin, "{msg}").unwrap();
+    let mut line = String::new();
+    assert!(stdout.read_line(&mut line).unwrap() > 0);
+    let out: Value = serde_json::from_str(&line).unwrap();
+    assert_eq!(out["id"], msg["id"]);
+    out
+}
+
+#[test]
+fn stdio_starts_offline_reconnects_after_revocation_and_never_replays_input() {
+    let temp = tempfile::tempdir().unwrap();
+    let dir = temp.path().join(".rssh/mcp-discovery");
     let mut child = Command::new(env!("CARGO_BIN_EXE_rssh-cli"))
         .arg("mcp-proxy")
         .env("RSSH_MCP_DISCOVERY_DIR", &dir)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
         .spawn()
         .unwrap();
     let mut stdin = child.stdin.take().unwrap();
     let mut stdout = BufReader::new(child.stdout.take().unwrap());
-    let mut line = String::new();
-    writeln!(
-        stdin,
-        "{}",
-        serde_json::json!({"jsonrpc":"2.0","id":1,"method":"initialize"})
-    )
-    .unwrap();
-    stdout.read_line(&mut line).unwrap();
-    assert_eq!(
-        serde_json::from_str::<serde_json::Value>(&line).unwrap()["result"]["ok"],
-        true
+    let initialize = rpc(
+        &mut stdin,
+        &mut stdout,
+        json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":PROTOCOL}}),
     );
-    line.clear();
+    assert_eq!(initialize["result"]["protocolVersion"], PROTOCOL);
     writeln!(
         stdin,
-        "{}",
-        serde_json::json!({"jsonrpc":"2.0","id":2,"method":"tools/list"})
+        "{{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}}"
     )
     .unwrap();
-    stdout.read_line(&mut line).unwrap();
-    assert!(line.contains("result"));
+    let tools = rpc(
+        &mut stdin,
+        &mut stdout,
+        json!({"jsonrpc":"2.0","id":2,"method":"tools/list"}),
+    );
+    assert!(tools["result"]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|t| t["name"] == "list_terminals"));
+    let list = |id| json!({"jsonrpc":"2.0","id":id,"method":"tools/call","params":{"name":"list_terminals","arguments":{}}});
+    assert_eq!(
+        rpc(&mut stdin, &mut stdout, list(3))["error"]["code"],
+        -32000
+    );
+    let (first, server) = start(&dir, "first-token", "first", false, true);
+    assert_eq!(
+        rpc(&mut stdin, &mut stdout, list(4))["result"]["content"][0]["text"],
+        "first"
+    );
     server.join().unwrap();
-    drop(registration);
-    line.clear();
-    writeln!(
-        stdin,
-        "{}",
-        serde_json::json!({"jsonrpc":"2.0","id":3,"method":"tools/list"})
-    )
-    .unwrap();
-    stdout.read_line(&mut line).unwrap();
-    assert!(line.contains("unavailable"));
+    drop(first);
+    assert_eq!(
+        rpc(&mut stdin, &mut stdout, list(5))["error"]["code"],
+        -32000
+    );
+    let (second, server) = start(&dir, "second-token", "second", true, false);
+    let write = json!({"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"write_terminal","arguments":{"sessionId":"fixture","text":"test"}}});
+    assert_eq!(rpc(&mut stdin, &mut stdout, write)["error"]["code"], -32001);
+    server.join().unwrap();
+    drop(second);
+    let (third, server) = start(&dir, "third-token", "third", false, false);
+    assert_eq!(
+        rpc(&mut stdin, &mut stdout, list(7))["result"]["content"][0]["text"],
+        "third"
+    );
+    server.join().unwrap();
+    drop(third);
     drop(stdin);
     assert!(child.wait().unwrap().success());
 }

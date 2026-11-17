@@ -111,6 +111,14 @@ ChatGPT 登录使用订阅，不经过代理，也不要求 OpenAI API Key。首
 python scripts/check-codex-subscription.py --codex "C:\Codex程序的绝对路径\codex.exe"
 ```
 
+### 本机 Agent 一次注册
+
+在「设置 → 外部终端接入（MCP）」复制不含令牌的本机配置，将 `rssh mcp-proxy`
+注册到支持 stdio MCP 的本机 Agent。不在 PATH 时请使用 CLI 的绝对路径。
+Agent 可以在接入关闭时启动；开启接入或停止后再次开启，不用重启 Agent 或更新配置。
+停止即撤销访问，允许输入仍需单独开启；同时共享的 RSSH 实例必须只保留一个。
+该方式不对公网开放，也不能直接用于云端 Agent。
+
 ### 开发快速开始
 
 ```powershell

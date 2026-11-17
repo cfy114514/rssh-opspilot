@@ -8,6 +8,17 @@ mod unix {
     use std::time::Duration;
 
     const MAX_MESSAGE: usize = 1024 * 1024;
+    const PROTOCOL: &str = "2025-03-26";
+    const MAX_DISCOVERY_CANDIDATES: usize = 8;
+
+    struct Connection {
+        info: DiscoveryInfo,
+        session: Option<String>,
+    }
+
+    fn same_bridge(a: &DiscoveryInfo, b: &DiscoveryInfo) -> bool {
+        a.bridge_id == b.bridge_id && a.endpoint == b.endpoint && a.token == b.token
+    }
     fn valid_endpoint(info: &DiscoveryInfo) -> bool {
         let Ok(url) = reqwest::Url::parse(&info.endpoint) else {
             return false;
@@ -37,7 +48,7 @@ mod unix {
             .post(&info.endpoint)
             .bearer_auth(&info.token)
             .header("accept", "application/json, text/event-stream")
-            .header("mcp-protocol-version", "2025-03-26")
+            .header("mcp-protocol-version", PROTOCOL)
             .json(body);
         if let Some(id) = session {
             req = req.header("mcp-session-id", id);
@@ -65,6 +76,57 @@ mod unix {
         Ok((id, Some(parsed)))
     }
 
+    async fn connect(
+        client: &reqwest::Client,
+        candidates: Vec<DiscoveryInfo>,
+    ) -> Result<Connection, &'static str> {
+        if candidates.len() > MAX_DISCOVERY_CANDIDATES {
+            return Err("Too many RSSH discovery records; close other RSSH instances.");
+        }
+        let initialize = json!({
+            "jsonrpc":"2.0", "id":"rssh-proxy-initialize", "method":"initialize",
+            "params":{"protocolVersion":PROTOCOL, "capabilities":{},
+                "clientInfo":{"name":"RSSH local MCP proxy","version":env!("CARGO_PKG_VERSION")}}
+        });
+        let mut selected = None;
+        for info in candidates {
+            // Only handshakes are tried during discovery, never a terminal call.
+            let attempt = tokio::time::timeout(
+                Duration::from_millis(750),
+                request(client, &info, None, &initialize),
+            )
+            .await;
+            let Ok(Ok((session, Some(reply)))) = attempt else {
+                continue;
+            };
+            if reply["id"] != "rssh-proxy-initialize"
+                || reply["result"]["protocolVersion"] != PROTOCOL
+            {
+                continue;
+            }
+            if selected.is_some() {
+                return Err("More than one RSSH instance is sharing. Keep access on in just one.");
+            }
+            selected = Some(Connection { info, session });
+        }
+        let selected = selected
+            .ok_or("RSSH MCP access is unavailable. Enable it in RSSH, then call again.")?;
+        // The RSSH HTTP endpoint is stateless; older/custom local implementations
+        // may return an MCP session id and require the final notification.
+        if let Some(session) = &selected.session {
+            let notification = json!({"jsonrpc":"2.0","method":"notifications/initialized"});
+            tokio::time::timeout(
+                Duration::from_millis(750),
+                request(client, &selected.info, Some(session), &notification),
+            )
+            .await
+            .ok()
+            .and_then(Result::ok)
+            .ok_or("RSSH MCP handshake failed. No terminal input was sent.")?;
+        }
+        Ok(selected)
+    }
+
     pub fn run() -> Result<(), Box<dyn std::error::Error>> {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -74,8 +136,9 @@ mod unix {
             .redirect(reqwest::redirect::Policy::none())
             .timeout(Duration::from_secs(15))
             .build()?;
-        let mut selected: Option<DiscoveryInfo> = None;
-        let mut session = None;
+        let catalog = rssh_lib::terminal_mcp_tools(true);
+        let mut upstream: Option<Connection> = None;
+        let mut initialized = false;
         let stdin = io::stdin();
         let mut stdout = io::stdout().lock();
         let mut input = stdin.lock();
@@ -90,44 +153,62 @@ mod unix {
             if line.len() > MAX_MESSAGE {
                 return Err("MCP request too large".into());
             }
-            let Ok(body) = serde_json::from_slice::<Value>(&line) else {
-                return Err("Invalid MCP JSON".into());
-            };
+            let body: Value = serde_json::from_slice(&line)?;
             let method = body.get("method").and_then(Value::as_str);
-            let result = if selected.is_none() && method == Some("initialize") {
-                let infos = automation_discovery::candidates().unwrap_or_default();
-                let mut found = None;
-                for info in infos {
-                    if let Ok((sid, response)) =
-                        runtime.block_on(request(&client, &info, None, &body))
-                    {
-                        if response.as_ref().and_then(|r| r.get("result")).is_some() {
-                            session = sid;
-                            selected = Some(info);
-                            found = response;
-                            break;
+            if method == Some("notifications/initialized") {
+                initialized = true;
+                continue;
+            }
+            let Some(id) = body.get("id") else { continue };
+            let success = |result| json!({"jsonrpc":"2.0","id":id,"result":result});
+            let error = |code, message| json!({"jsonrpc":"2.0","id":id,"error":{"code":code,"message":message}});
+            let response = match method {
+                Some("initialize") => success(json!({
+                    "protocolVersion":PROTOCOL,
+                    "serverInfo":{"name":"RSSH local MCP proxy","version":env!("CARGO_PKG_VERSION")},
+                    "capabilities":{"tools":{}},
+                    "instructions":"Tool descriptions are available while RSSH is off. Calls work only while the user explicitly enables access. Write and control keys require the separate write toggle. Never automatically retry an uncertain input."
+                })),
+                Some("ping") => success(json!({})),
+                Some("tools/list") if initialized => success(json!({"tools":catalog})),
+                Some("tools/call") if initialized => {
+                    let candidates = automation_discovery::candidates().unwrap_or_default();
+                    // Stop and restart revokes the old record and token. Resolve
+                    // the new endpoint before sending a tool request, not after it.
+                    if !upstream.as_ref().is_some_and(|c| {
+                        candidates.len() == 1 && same_bridge(&c.info, &candidates[0])
+                    }) {
+                        upstream = None;
+                    }
+                    let connected = if let Some(c) = upstream.take() {
+                        Ok(c)
+                    } else {
+                        runtime.block_on(connect(&client, candidates))
+                    };
+                    match connected {
+                        Err(message) => error(-32000, message),
+                        Ok(c) => {
+                            let result = runtime.block_on(request(
+                                &client,
+                                &c.info,
+                                c.session.as_deref(),
+                                &body,
+                            ));
+                            match result {
+                                Ok((_, Some(response))) => { upstream = Some(c); response }
+                                _ => error(-32001, "RSSH connection was lost while handling this request. Input delivery may be uncertain; inspect the terminal before retrying. The next call reconnects."),
+                            }
                         }
                     }
                 }
-                found.map(Some).ok_or(())
-            } else if let Some(ref info) = selected {
-                runtime
-                    .block_on(request(&client, info, session.as_deref(), &body))
-                    .map(|(_, response)| response)
-            } else {
-                Err(())
+                Some("tools/list" | "tools/call") => {
+                    error(-32002, "Initialize the MCP client first.")
+                }
+                _ => error(-32601, "Method not found"),
             };
-            if let Some(id) = body.get("id") {
-                let response = match result {
-                    Ok(Some(response)) => response,
-                    _ => {
-                        json!({"jsonrpc":"2.0", "id": id, "error": {"code": -32000, "message": "RSSH MCP access is unavailable. Enable it in RSSH and restart the client; input delivery may be uncertain."}})
-                    }
-                };
-                serde_json::to_writer(&mut stdout, &response)?;
-                stdout.write_all(b"\n")?;
-                stdout.flush()?;
-            }
+            serde_json::to_writer(&mut stdout, &response)?;
+            stdout.write_all(b"\n")?;
+            stdout.flush()?;
         }
         Ok(())
     }

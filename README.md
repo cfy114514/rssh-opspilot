@@ -283,12 +283,16 @@ The persistent workbench indicator includes **Stop access**.
   parsed screen, command input, Enter, Ctrl+C, and other control keys. A desktop
   assistant with browser interaction can use this page directly. It operates the
   same live session you see in RSSH. Keep the RSSH window running.
-- **Codex:** install the RSSH CLI as `rssh` on your `PATH` and register once
-  with `codex mcp add rssh -- rssh mcp-proxy`. This command changes your
-  Codex MCP configuration; RSSH does not run it for you. Enable RSSH access
-  before starting or restarting Codex. The proxy discovers the current local
-  endpoint automatically; other clients supporting stdio can use the same
-  `rssh mcp-proxy` command.
+- **Local agent (stdio):** install the RSSH CLI and configure your agent once
+  to run `rssh mcp-proxy` (use the full executable path if `rssh` is not on the
+  agent's PATH). The settings page can copy a token-free configuration even
+  while access is off. For example, Codex registers the command with
+  `codex mcp add rssh -- rssh mcp-proxy`. RSSH does not change agent settings.
+  The agent can start before RSSH access is enabled; the same stdio process
+  rediscovers the endpoint after access is stopped and restarted. If multiple
+  RSSH instances are sharing at once, stop sharing in the others rather than
+  relying on an automatic choice. Tool descriptions are stable; the live RSSH
+  toggle still authorizes access, and input remains separately opt-in.
 - **MCP:** copy the connection details into a client supporting **Streamable
   HTTP** with an `Authorization: Bearer …` header. The URL is
   `http://127.0.0.1:<temporary-port>/mcp`; the token is generated for each start.

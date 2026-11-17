@@ -1,7 +1,10 @@
 /** English UI strings. Keep keys stable, sorted by area. */
 const en = {
   "automation.codex_title": "Connect Codex",
-  "automation.codex_hint": "Register once with the command below (requires the RSSH CLI in PATH). This changes your Codex MCP configuration. Start or restart Codex after enabling access. Other stdio MCP clients can use rssh mcp-proxy.",
+  "automation.local_agent_title": "Local agent · one-time setup",
+  "automation.local_agent_hint": "Register rssh mcp-proxy in any local stdio MCP client. Start can stay off during registration; when you turn access on, the same agent can connect without restarting. Keep RSSH on the same computer.",
+  "automation.local_agent_copy": "Copy local agent configuration (no token)",
+  "automation.codex_hint": "This example registers RSSH in Codex once. The RSSH CLI must be on PATH. You do not need to restart Codex when RSSH access is toggled.",
   "automation.codex_copy": "Copy Codex registration command",
   "automation.open_console": "Open browser console",
   "automation.title": "External terminal access (MCP)",

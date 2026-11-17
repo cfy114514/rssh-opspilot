@@ -6,6 +6,7 @@
   import { writeText } from "../clipboard.ts";
   import { toast } from "../stores/toast.svelte.ts";
 
+  const localClientConfig = '{ "mcpServers": { "rssh": { "command": "rssh", "args": ["mcp-proxy"] } } }';
   let allowInput = $state(false);
   let connection = $derived(automation.connection());
   let config = $derived(automation.connectionConfig());
@@ -20,6 +21,10 @@
   }
   async function copy() {
     try { await writeText(config); toast.success(t("about.copied")); }
+    catch (error) { toast.error(errMsg(error)); }
+  }
+  async function copyLocalClientConfig() {
+    try { await writeText(localClientConfig); toast.success(t("about.copied")); }
     catch (error) { toast.error(errMsg(error)); }
   }
   async function copyCodexCommand() {
@@ -41,41 +46,50 @@
   <p>{t("automation.description")}</p>
   {#if !app.capabilities().terminalAutomation}
     <p>{t("automation.desktop_only")}</p>
-  {:else if connection}
-    <div class="card">
-      <strong>{automation.writable() ? t("automation.active_write") : t("automation.active_read")}</strong>
-      <ul>
-        {#each automation.sharedSessions() as session (session.sessionId)}
-          <li>{session.label} · {session.type}</li>
-        {/each}
-      </ul>
-      {#if !automation.sharedSessions().length}<p>{t("automation.no_shared_sessions")}</p>{/if}
-      <code>{connection.endpoint}</code>
-      <button class="btn" onclick={stop}>{t("automation.stop")}</button>
-    </div>
-    <h4>{t("automation.codex_title")}</h4>
-    <p>{t("automation.codex_hint")}</p>
-    <code>codex mcp add rssh -- rssh mcp-proxy</code>
-    <button class="btn" onclick={copyCodexCommand}>{t("automation.codex_copy")}</button>
-    <h4>{t("automation.connect")}</h4>
-    <button class="btn btn-accent" onclick={openConsole}>{t("automation.open_console")}</button>
-    <p>{t("automation.connect_hint")}</p>
-    <button class="btn" onclick={copy}>{t("automation.copy_config")}</button>
-    <details>
-      <summary>{t("automation.show_config")}</summary>
-      <pre>{config}</pre>
-    </details>
-    <p>{t("automation.client_support")}</p>
-    <p>{t("automation.lifetime")}</p>
   {:else}
-    <label class="choice">
-      <input type="checkbox" bind:checked={allowInput} disabled={automation.busy()} />
-      <span>{t("automation.allow_input")}</span>
-    </label>
-    <p>{t("automation.input_hint")}</p>
-    <button class="btn btn-accent" onclick={start} disabled={automation.busy()}>
-      {automation.busy() ? t("common.loading") : t("automation.start")}
-    </button>
+    <div class="card">
+      <h4>{t("automation.local_agent_title")}</h4>
+      <p>{t("automation.local_agent_hint")}</p>
+      <button class="btn" onclick={copyLocalClientConfig}>{t("automation.local_agent_copy")}</button>
+      <details>
+        <summary>{t("automation.codex_title")}</summary>
+        <p>{t("automation.codex_hint")}</p>
+        <code>codex mcp add rssh -- rssh mcp-proxy</code>
+        <button class="btn" onclick={copyCodexCommand}>{t("automation.codex_copy")}</button>
+      </details>
+    </div>
+    {#if connection}
+      <div class="card">
+        <strong>{automation.writable() ? t("automation.active_write") : t("automation.active_read")}</strong>
+        <ul>
+          {#each automation.sharedSessions() as session (session.sessionId)}
+            <li>{session.label} · {session.type}</li>
+          {/each}
+        </ul>
+        {#if !automation.sharedSessions().length}<p>{t("automation.no_shared_sessions")}</p>{/if}
+        <code>{connection.endpoint}</code>
+        <button class="btn" onclick={stop}>{t("automation.stop")}</button>
+      </div>
+      <h4>{t("automation.connect")}</h4>
+      <button class="btn btn-accent" onclick={openConsole}>{t("automation.open_console")}</button>
+      <p>{t("automation.connect_hint")}</p>
+      <button class="btn" onclick={copy}>{t("automation.copy_config")}</button>
+      <details>
+        <summary>{t("automation.show_config")}</summary>
+        <pre>{config}</pre>
+      </details>
+      <p>{t("automation.client_support")}</p>
+      <p>{t("automation.lifetime")}</p>
+    {:else}
+      <label class="choice">
+        <input type="checkbox" bind:checked={allowInput} disabled={automation.busy()} />
+        <span>{t("automation.allow_input")}</span>
+      </label>
+      <p>{t("automation.input_hint")}</p>
+      <button class="btn btn-accent" onclick={start} disabled={automation.busy()}>
+        {automation.busy() ? t("common.loading") : t("automation.start")}
+      </button>
+    {/if}
   {/if}
   {#if automation.error()}<p role="alert">{errMsg(automation.error())}</p>{/if}
 </div>

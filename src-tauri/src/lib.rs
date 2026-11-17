@@ -2,6 +2,9 @@ mod ai;
 #[cfg(any(windows, macos, linux))]
 mod automation;
 #[cfg(any(windows, macos, linux))]
+#[doc(hidden)]
+pub use automation::terminal_mcp_tools;
+#[cfg(any(windows, macos, linux))]
 pub mod automation_discovery;
 mod commands;
 #[cfg(any(ohos, test))]
