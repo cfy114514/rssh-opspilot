@@ -28,7 +28,7 @@ import {
   redactionRuleMatches,
   type CommandBlockRedactionSettings,
   type CompiledCommandBlockRedaction,
-  type CompiledCommandBlockRedactionRule,
+  type RedactionRuleMatch,
 } from "./command-block-redaction";
 
 export interface RenderOptions {
@@ -155,67 +155,69 @@ function sliceCells(
   return out;
 }
 
-function applyRule(
-  cells: ReadonlyArray<ImageCell>,
-  rule: CompiledCommandBlockRedactionRule,
-): ImageCell[] {
-  const text = rowText(cells);
-  const matches = redactionRuleMatches(text, rule);
-  if (matches.length === 0) return cells.map((cell) => ({ ...cell }));
-
-  const out: ImageCell[] = [];
-  let cursor = 0;
-  for (const match of matches) {
-    out.push(...sliceCells(cells, cursor, match.start));
-    const style = styleAt(cells, match.start);
-    if (style) out.push(...cellsFromText(rule.replacement, style));
-    cursor = match.end;
-  }
-  out.push(...sliceCells(cells, cursor, text.length));
-  return out;
-}
-
-function applyRules(
-  cells: ReadonlyArray<ImageCell>,
-  rules: ReadonlyArray<CompiledCommandBlockRedactionRule>,
-): ImageCell[] {
-  return rules.reduce<ImageCell[]>((current, rule) => applyRule(current, rule), [...cells]);
-}
-
-function redactWrappedPromptRows(
-  rows: ReadonlyArray<ImageRow>,
-  promptEnd: number,
-  redaction: CompiledCommandBlockRedaction,
+/** Matches use offsets in the joined logical line. Put each replacement in
+ * its first cell's row and style, removing the covered cells from every row. */
+function replaceRowMatches(
+  rows: ImageRow[],
+  matches: ReadonlyArray<RedactionRuleMatch>,
+  replacement: string,
 ): ImageRow[] {
-  const promptStyle = styleAt(rows[0].cells, 0);
-  let remaining = promptEnd;
-
-  return rows.map((row, index) => {
-    if (remaining === 0) {
-      return { ...row, cells: applyRules(row.cells, redaction.rules) };
+  let rowEnd = 0;
+  let matchIndex = 0;
+  return rows.map((row) => {
+    const start = rowEnd;
+    const length = rowText(row.cells).length;
+    rowEnd += length;
+    if (length === 0 || matchIndex === matches.length || matches[matchIndex].start >= rowEnd) {
+      return row;
     }
 
-    const text = rowText(row.cells);
-    const consumed = Math.min(remaining, text.length);
-    remaining -= consumed;
-    const tail = applyRules(
-      sliceCells(row.cells, consumed, text.length),
-      redaction.rules,
-    );
-    if (index !== 0) return { ...row, cells: tail };
-
-    const replacement = promptReplacementForTail(
-      redaction.promptReplacement,
-      remaining === 0 ? rowText(tail) : "",
-    );
-    return {
-      ...row,
-      cells: [
-        ...(promptStyle ? cellsFromText(replacement, promptStyle) : []),
-        ...tail,
-      ],
-    };
+    const cells: ImageCell[] = [];
+    let cursor = 0;
+    while (matchIndex < matches.length && matches[matchIndex].start < rowEnd) {
+      const match = matches[matchIndex];
+      if (match.start >= start) {
+        const from = match.start - start;
+        cells.push(...sliceCells(row.cells, cursor, from));
+        const style = styleAt(row.cells, from);
+        if (style) cells.push(...cellsFromText(replacement, style));
+      }
+      cursor = Math.min(length, match.end - start);
+      if (match.end > rowEnd) break;
+      matchIndex++;
+    }
+    cells.push(...sliceCells(row.cells, cursor, length));
+    return { ...row, cells };
   });
+}
+
+function redactLogicalLine(
+  rows: ImageRow[],
+  firstLine: boolean,
+  redaction: CompiledCommandBlockRedaction,
+): ImageRow[] {
+  const joinRows = (line: ImageRow[]) => line.map((row) => rowText(row.cells)).join("");
+  let text = joinRows(rows);
+  const promptEnd = commandBlockPromptEnd(text, firstLine, redaction);
+  const promptStyle = rows[0].cells[0];
+  if (promptEnd !== null) {
+    rows = replaceRowMatches(rows, [{ start: 0, end: promptEnd }], "");
+    text = text.slice(promptEnd);
+  }
+
+  for (const rule of redaction.rules) {
+    const matches = redactionRuleMatches(text, rule);
+    if (matches.length === 0) continue;
+    rows = replaceRowMatches(rows, matches, rule.replacement);
+    text = joinRows(rows);
+  }
+
+  if (promptEnd !== null && promptStyle) {
+    const first = rows[0];
+    const replacement = promptReplacementForTail(redaction.promptReplacement, rowText(first.cells));
+    rows[0] = { ...first, cells: [...cellsFromText(replacement, promptStyle), ...first.cells] };
+  }
+  return rows;
 }
 
 export function redactImageRows(
@@ -231,12 +233,6 @@ export function redactImageRows(
     const row = rows[index];
     const firstRow = !seenBlocks.has(row.blockId);
     seenBlocks.add(row.blockId);
-    if (!firstRow) {
-      out.push({ ...row, cells: applyRules(row.cells, redaction.rules) });
-      index++;
-      continue;
-    }
-
     let logicalEnd = index + 1;
     while (
       logicalEnd < rows.length &&
@@ -245,16 +241,8 @@ export function redactImageRows(
     ) {
       logicalEnd++;
     }
-    const logicalRows = rows.slice(index, logicalEnd);
-    const logicalText = logicalRows.map((item) => rowText(item.cells)).join("");
-    const promptEnd = commandBlockPromptEnd(logicalText, true, redaction);
-    if (promptEnd === null) {
-      out.push(...logicalRows.map((item) => ({
-        ...item,
-        cells: applyRules(item.cells, redaction.rules),
-      })));
-    } else {
-      out.push(...redactWrappedPromptRows(logicalRows, promptEnd, redaction));
+    for (const item of redactLogicalLine(rows.slice(index, logicalEnd), firstRow, redaction)) {
+      out.push(item);
     }
     index = logicalEnd;
   }
@@ -279,20 +267,23 @@ export function extractImageRows(
   const out: ImageRow[] = [];
   for (const block of sorted) {
     const lines = resolveBlockLines(term, block, foldStore);
-    for (const line of lines) {
+    for (const [index, line] of lines.entries()) {
+      const continues = lines[index + 1]?.isWrapped;
+      let retainedLength = 0;
       const cells: ImageCell[] = [];
       for (let x = 0; x < line.length; x++) {
         const cell = line.getCell(x);
         if (!cell) continue;
         if (cell.getWidth() === 0) continue;
-        cells.push(cellToImageCell(cell, theme));
+        const imageCell = cellToImageCell(cell, theme);
+        cells.push(imageCell);
+        // A printed space before a soft wrap belongs to the logical text.
+        // Empty trailing cells can also be padding before a wide character.
+        if (imageCell.ch !== " " || imageCell.bg !== defaultBg(theme) || (continues && cell.getChars())) {
+          retainedLength = cells.length;
+        }
       }
-      // 行尾 trim：连续的"空格 + 默认背景"剪掉，让图变窄
-      while (cells.length > 0) {
-        const last = cells[cells.length - 1];
-        if (last.ch === " " && last.bg === defaultBg(theme)) cells.pop();
-        else break;
-      }
+      cells.length = retainedLength;
       out.push({
         blockId: block.id,
         blockColor: block.color,

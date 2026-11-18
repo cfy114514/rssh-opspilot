@@ -325,6 +325,49 @@ function imageText(row: ImageRow): string {
 }
 
 describe("redactImageRows", () => {
+  it("redacts matches spanning soft wraps in commands and output, retaining row styles", () => {
+    const rows = [
+      imageRow(1, "$ ping 10."),
+      imageRow(1, "0.", true),
+      imageRow(1, "0.1", true),
+      imageRow(1, "peer=10.0"),
+      imageRow(1, ".0.1 up", true),
+    ];
+    rows[3].cells[5].bold = true;
+    const redacted = redactImageRows(rows, {
+      promptEnabled: true,
+      promptReplacement: ">",
+      rules: [
+        { pattern: String.raw`\b10\.\d+\.\d+\.\d+\b`, replacement: "<IP>" },
+        { pattern: "<IP> up", replacement: "online" },
+      ],
+    });
+    expect(redacted.map(imageText)).toEqual(["> ping <IP>", "", "", "peer=online", ""]);
+    expect(redacted[3].cells.slice(5).every((cell) => cell.bold)).toBe(true);
+  });
+
+  it("keeps hard newlines and block boundaries independent", () => {
+    const rows = [imageRow(1, "sec"), imageRow(1, "ret"), imageRow(2, "xyz", true)];
+    const redacted = redactImageRows(rows, {
+      promptEnabled: false,
+      promptReplacement: "",
+      rules: [{ pattern: "secret|retxyz", replacement: "hidden" }],
+    });
+    expect(redacted.map(imageText)).toEqual(["sec", "ret", "xyz"]);
+  });
+
+  it("preserves a space at the wrap boundary for redaction during image export", () => {
+    const chars = (text: string) => Array.from(text, (ch) => ({ ch, width: 1 as const }));
+    const term = fakeTerm([fakeLine(chars("Bearer ")), fakeLine(chars("example"), true)]);
+    const rows = extractImageRows(term, [fakeBlock(1, "#abc", 0, 1)]);
+    const redacted = redactImageRows(rows, {
+      promptEnabled: false,
+      promptReplacement: "",
+      rules: [{ pattern: "Bearer example", replacement: "<hidden>" }],
+    });
+    expect(redacted.map(imageText)).toEqual(["<hidden>", ""]);
+  });
+
   it("replaces only the first-row prompt of every block and keeps commands", () => {
     const rows = [
       imageRow(1, "alice@prod:~/app$ ssh 10.0.0.1"),
