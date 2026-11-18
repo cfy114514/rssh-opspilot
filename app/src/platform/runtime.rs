@@ -123,7 +123,7 @@ mod tests {
     #[test]
     fn native_capabilities_have_the_shared_wire_contract() {
         let value = serde_json::to_value(RuntimeCapabilities::native()).unwrap();
-        for key in [
+        let boolean_keys = [
             "localPty",
             "serial",
             "localDiscovery",
@@ -143,10 +143,12 @@ mod tests {
             "terminalAutomation",
             "mcpServer",
             "terminalKeybar",
-        ] {
+        ];
+        for key in boolean_keys {
             assert!(value[key].is_boolean(), "missing boolean capability {key}");
         }
-        assert_eq!(value.as_object().unwrap().len(), 19);
+        // The remaining field is the terminalPolicy object checked below.
+        assert_eq!(value.as_object().unwrap().len(), boolean_keys.len() + 1);
         assert_eq!(value["fileMultiSelect"], true);
         assert_eq!(value["releaseUpdateCheck"], !cfg!(ios));
         assert_eq!(value["systemBack"], cfg!(android));
